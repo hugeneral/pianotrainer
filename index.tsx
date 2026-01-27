@@ -21,37 +21,53 @@ const DURATION_MAP: Record<number, string> = {
   1: '16', 2: '8', 4: '4', 8: '2', 16: '1'
 };
 
+const LATENCY_MS = 60; // Global latency compensation for analysis
+const PERFECT_WINDOW_MS = 35; // Window in ms to consider a note perfect
+
 const getTimingColorHex = (diffMs: number): string => {
-  if (Math.abs(diffMs) < 45) return '#64748b'; // Slate (Perfect)
+  if (Math.abs(diffMs) < PERFECT_WINDOW_MS) return '#64748b'; // Slate (Perfect)
   if (diffMs < 0) return '#3b82f6'; // Blue (Early)
   return '#f43f5e'; // Rose (Late)
 };
 
 const getTimingLabel = (diffMs: number): string => {
-  if (Math.abs(diffMs) < 45) return 'PERFECT';
+  if (Math.abs(diffMs) < PERFECT_WINDOW_MS) return 'PERFECT';
   return diffMs < 0 ? `${Math.abs(Math.round(diffMs))}ms EARLY` : `${Math.round(diffMs)}ms LATE`;
 };
 
 const useMidi = () => {
   const [isConnected, setIsConnected] = useState(false);
-  const [midiSignal, setMidiSignal] = useState<{data: number[], timeStamp: number} | null>(null);
+  const [midiSignal, setMidiSignal] = useState<{data: number[], timeStamp: number, source: 'midi' | 'keyboard'} | null>(null);
 
   useEffect(() => {
     let midiAccess: any = null;
-    const onMessage = (msg: any) => setMidiSignal({ data: Array.from(msg.data), timeStamp: performance.now() });
+    
+    const onMessage = (msg: any) => {
+        const data = Array.from(msg.data) as number[];
+        // Filter out Active Sensing (254/0xFE) and Clock (248/0xF8) messages which can spam the app
+        if (data[0] >= 240) return;
+        setMidiSignal({ data, timeStamp: performance.now(), source: 'midi' });
+    };
+
     const onStateChange = () => {
       if (!midiAccess) return;
       const inputs = Array.from(midiAccess.inputs.values());
       setIsConnected(inputs.length > 0);
-      inputs.forEach((input: any) => { input.onmidimessage = onMessage; });
+      // Re-bind to ensure new devices are caught
+      inputs.forEach((input: any) => { 
+          input.onmidimessage = onMessage; 
+      });
     };
 
     if ((navigator as any).requestMIDIAccess) {
-      (navigator as any).requestMIDIAccess().then((access: any) => {
+      (navigator as any).requestMIDIAccess({ sysex: false }).then((access: any) => {
         midiAccess = access;
         access.onstatechange = onStateChange;
         onStateChange();
-      }).catch(() => setIsConnected(false));
+      }).catch((e: any) => {
+          console.error("MIDI Access Failed", e);
+          setIsConnected(false);
+      });
     }
 
     const handleKey = (e: KeyboardEvent, isDown: boolean) => {
@@ -59,7 +75,8 @@ const useMidi = () => {
       if (midi) {
         setMidiSignal({
           data: [isDown ? 144 : 128, midi, isDown ? 100 : 0],
-          timeStamp: performance.now()
+          timeStamp: performance.now(),
+          source: 'keyboard'
         });
       }
     };
@@ -88,7 +105,7 @@ interface RecordedNote {
   durationSixteenths: number; 
 }
 
-const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebugLog }: { notes: RecordedNote[], timeSig: {beats: number}, measures: number, isSessionActive: boolean, tempo: number, onDebugLog?: React.Dispatch<React.SetStateAction<string>> }) => {
+const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebugLog }: { notes: RecordedNote[], timeSig: {beats: number, value: number}, measures: number, isSessionActive: boolean, tempo: number, onDebugLog?: React.Dispatch<React.SetStateAction<string>> }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -107,18 +124,20 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
 
   const buildTex = useCallback((recordedNotes: RecordedNote[]) => {
     let tex = `\\tempo ${tempo}\r\n`;
-    tex += `\\ts ${timeSig.beats} 4 \\clef treble `; 
+    tex += `\\ts ${timeSig.beats} ${timeSig.value} \\clef treble `; 
 
-    const totalSixteenths = measures * timeSig.beats * 4;
+    const sixteenthsPerBeat = 16 / timeSig.value;
+    const measureSixteenths = timeSig.beats * sixteenthsPerBeat;
+    const totalSixteenths = measures * measureSixteenths;
     const texMetadata: any[] = [];
 
     let currentSixteenth = 0;
     while (currentSixteenth < totalSixteenths) {
-      const inMeasureIdx = currentSixteenth % (timeSig.beats * 4);
-      const remainingInMeasure = (timeSig.beats * 4) - inMeasureIdx;
+      const inMeasureIdx = currentSixteenth % measureSixteenths;
+      const remainingInMeasure = measureSixteenths - inMeasureIdx;
       
       const startsAtSlot = recordedNotes.filter(n => 
-        (n.measure * timeSig.beats * 4) + (n.beatIndex * 4) + n.sixteenthIndex === currentSixteenth
+        (n.measure * measureSixteenths) + (n.beatIndex * sixteenthsPerBeat) + n.sixteenthIndex === currentSixteenth
       );
 
       if (startsAtSlot.length > 0) {
@@ -152,7 +171,7 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
         currentSixteenth += snappedDur;
       } else {
         const activeNotes = recordedNotes.filter(n => {
-          const startIdx = (n.measure * timeSig.beats * 4) + (n.beatIndex * 4) + n.sixteenthIndex;
+          const startIdx = (n.measure * measureSixteenths) + (n.beatIndex * sixteenthsPerBeat) + n.sixteenthIndex;
           const endIdx = startIdx + n.durationSixteenths;
           return currentSixteenth > startIdx && currentSixteenth < endIdx;
         });
@@ -166,13 +185,13 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
         }
       }
 
-      if (currentSixteenth > 0 && currentSixteenth % (timeSig.beats * 4) === 0 && currentSixteenth < totalSixteenths) {
+      if (currentSixteenth > 0 && currentSixteenth % measureSixteenths === 0 && currentSixteenth < totalSixteenths) {
         tex += "| ";
       }
     }
 
     return { tex, texMetadata };
-  }, [timeSig.beats, measures, tempo]);
+  }, [timeSig.beats, timeSig.value, measures, tempo]);
 
   useLayoutEffect(() => {
     if (!containerRef.current || apiRef.current) return;
@@ -259,7 +278,7 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
                             }
 
                             coloredCount++;
-                            const status = Math.abs(diffMs) < 45 ? 'PERFECT' : diffMs < 0 ? 'EARLY' : 'LATE';
+                            const status = Math.abs(diffMs) < PERFECT_WINDOW_MS ? 'PERFECT' : diffMs < 0 ? 'EARLY' : 'LATE';
                             colorDebugLog += `Note #${globalIndex} (Bar ${bar.index !== undefined ? bar.index + 1 : '?'}) [${diffMs > 0 ? '+' : ''}${Math.round(diffMs)}ms] [${status}] -> ${colorHex}\n`;
                           } catch (err) {
                             console.error(`[Error] Color application failed: ${err}`);
@@ -317,14 +336,14 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
     } catch (e) {
       console.error("Render failed", e);
     }
-  }, [notes, isSessionActive, timeSig.beats, measures, error, buildTex, tempo, onDebugLog]);
+  }, [notes, isSessionActive, timeSig.beats, timeSig.value, measures, error, buildTex, tempo, onDebugLog]);
 
   return (
     <div className="flex-1 min-h-[300px] bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative flex flex-col overflow-hidden shrink-0">
       <div className="flex justify-between items-center mb-4 shrink-0 px-2">
         <div>
           <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-500">Practice Analysis</h2>
-          <p className="text-[11px] text-slate-400 mt-1">Tempo: {tempo} BPM • Meter: {timeSig.beats}/4</p>
+          <p className="text-[11px] text-slate-400 mt-1">Tempo: {tempo} BPM • Meter: {timeSig.beats}/{timeSig.value}</p>
         </div>
         {!isSessionActive && notes.length > 0 && (
           <div className="flex gap-4">
@@ -382,7 +401,7 @@ const Telemetry = ({ notes, isSessionActive }: { notes: RecordedNote[], isSessio
             <div key={n.id} className="flex items-center justify-between bg-slate-900/60 p-3 rounded-xl border border-slate-800/60 transition-all hover:bg-slate-800/40 animate-in fade-in slide-in-from-right-2">
                <div className="flex items-center gap-6">
                   <div className="w-12 h-6 flex items-center justify-center bg-slate-800 rounded-md text-slate-500 font-bold border border-slate-700 text-[9px]">MIDI {n.midi}</div>
-                  <span className={`font-black tracking-wider w-32 ${Math.abs(n.diffMs) < 45 ? 'text-slate-500' : n.diffMs < 0 ? 'text-blue-400' : 'text-rose-500'}`}>{getTimingLabel(n.diffMs)}</span>
+                  <span className={`font-black tracking-wider w-32 ${Math.abs(n.diffMs) < PERFECT_WINDOW_MS ? 'text-slate-500' : n.diffMs < 0 ? 'text-blue-400' : 'text-rose-500'}`}>{getTimingLabel(n.diffMs)}</span>
                </div>
                <span className="text-[9px] text-slate-600 font-black uppercase">Bar {n.measure+1} • Pos {n.beatIndex+1}.{n.sixteenthIndex+1}</span>
             </div>
@@ -395,7 +414,7 @@ const Telemetry = ({ notes, isSessionActive }: { notes: RecordedNote[], isSessio
 
 const App = () => {
   const [tempo, setTempo] = useState(100);
-  const [timeSig, setTimeSig] = useState({ beats: 4 });
+  const [timeSig, setTimeSig] = useState({ beats: 4, value: 4 });
   const [measures, setMeasures] = useState(4);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isIntro, setIsIntro] = useState(false);
@@ -510,19 +529,35 @@ const App = () => {
 
   useEffect(() => {
     if (midiSignal) {
-      const [cmd, midi, vel] = midiSignal.data;
-      const isNoteOn = (cmd === 144 || cmd === 153) && vel > 0;
-      const isNoteOff = (cmd === 128 || cmd === 144 || cmd === 153) && vel === 0;
+      const [statusByte, rawMidi, vel] = midiSignal.data;
+      
+      // Real MIDI devices often send Middle C as 60.
+      // If the user feels this is too high on the score, we shift down by an octave (12 semitones).
+      const midi = midiSignal.source === 'midi' ? rawMidi - 12 : rawMidi;
+
+      // MASK the status byte to ignore channel information (0x90 vs 0x91 etc)
+      const command = statusByte & 0xF0; 
+      
+      const isNoteOn = (command === 0x90) && vel > 0;
+      const isNoteOff = (command === 0x80) || ((command === 0x90) && vel === 0);
 
       // 1. Instant Feedback (Audio + Visual)
       setActiveInput(true);
-      if (isNoteOn) playSynth(midi);
+      
+      // Only play synth sound if NO external MIDI device is connected
+      // (User likely wants to hear the real instrument instead)
+      if (isNoteOn && !isConnected) {
+        playSynth(midi);
+      }
+      
       const timer = setTimeout(() => setActiveInput(false), 150);
+
+      // Latency compensation: Adjust input time by fixed amount to correct for system delay
+      const perfTime = midiSignal.timeStamp - LATENCY_MS;
 
       // 2. Recording Logic
       if (state.current.isRecording) {
         if (isNoteOn) {
-          const perfTime = midiSignal.timeStamp;
           let bestBeatIdx = -1;
           let minDist = Infinity;
           state.current.beatTimes.forEach((bt, idx) => {
@@ -534,25 +569,34 @@ const App = () => {
           if (bestBeatIdx >= 0) {
             const beatDurMs = (60.0 / tempo) * 1000;
             const targetBeatTime = state.current.beatTimes[bestBeatIdx + timeSig.beats].perfTime;
+            
+            // Calculate rhythm based on denominator (beat value)
+            const sixteenthsPerBeat = 16 / timeSig.value;
+            const sixteenthDurMs = beatDurMs / sixteenthsPerBeat;
             const rawOffset = perfTime - targetBeatTime;
-            const sixteenIdxRaw = Math.round(rawOffset / (beatDurMs / 4));
+            const sixteenIdxRaw = Math.round(rawOffset / sixteenthDurMs);
             
             let fBeatIdx = bestBeatIdx, fSixteenIdx = sixteenIdxRaw;
-            while (fSixteenIdx >= 4) { fSixteenIdx -= 4; fBeatIdx++; }
-            while (fSixteenIdx < 0) { fSixteenIdx += 4; fBeatIdx--; }
+            
+            // Normalize grid position
+            while (fSixteenIdx >= sixteenthsPerBeat) { fSixteenIdx -= sixteenthsPerBeat; fBeatIdx++; }
+            while (fSixteenIdx < 0) { fSixteenIdx += sixteenthsPerBeat; fBeatIdx--; }
 
             const mIdx = Math.floor(fBeatIdx / timeSig.beats);
             const bIdx = fBeatIdx % timeSig.beats;
             
-            activeNotes.current.set(midi, { startTime: perfTime, mIdx, bIdx, sIdx: fSixteenIdx, diffMs: rawOffset - (sixteenIdxRaw * (beatDurMs / 4)) });
+            activeNotes.current.set(midi, { startTime: perfTime, mIdx, bIdx, sIdx: fSixteenIdx, diffMs: rawOffset - (sixteenIdxRaw * sixteenthDurMs) });
           }
         } else if (isNoteOff) {
           const startData = activeNotes.current.get(midi);
           if (startData) {
-            const endTime = midiSignal.timeStamp;
+            const endTime = perfTime; // Use adjusted time for note off as well
             const beatDurMs = (60.0 / tempo) * 1000;
+            const sixteenthsPerBeat = 16 / timeSig.value;
+            const sixteenthDurMs = beatDurMs / sixteenthsPerBeat;
             const durMs = endTime - startData.startTime;
-            const durationSixteenths = Math.max(1, Math.round(durMs / (beatDurMs / 4)));
+            
+            const durationSixteenths = Math.max(1, Math.round(durMs / sixteenthDurMs));
             
             if (startData.mIdx >= 0 && startData.mIdx < measures) {
               setRecordedNotes(prev => [...prev, {
@@ -567,7 +611,7 @@ const App = () => {
 
       return () => clearTimeout(timer);
     }
-  }, [midiSignal, timeSig.beats, measures, tempo, playSynth]);
+  }, [midiSignal, timeSig.beats, timeSig.value, measures, tempo, playSynth, isConnected]);
 
   return (
     <div className="max-w-6xl mx-auto h-full p-6 flex flex-col gap-6 overflow-y-auto bg-black text-slate-100">
@@ -577,8 +621,8 @@ const App = () => {
           <p className="text-[9px] font-black tracking-[0.5em] text-slate-500 uppercase mt-4">Precision Rhythm Lab</p>
         </div>
         <div className={`flex items-center gap-5 px-7 py-4 rounded-2xl border transition-all duration-150 ${activeInput ? 'bg-slate-500 text-slate-900 scale-105 border-slate-300 shadow-[0_0_30px_#64748b]' : 'bg-slate-900/60 border-slate-800 shadow-2xl text-slate-400'}`}>
-           <div className={`w-2.5 h-2.5 rounded-full ${activeInput ? 'bg-slate-900' : (isConnected ? 'bg-slate-500 shadow-[0_0_12px_#64748b]' : 'bg-slate-700 animate-pulse')}`} />
-           <span className="text-[10px] font-black tracking-widest uppercase">{activeInput ? 'INPUT DETECTED' : (isConnected ? 'MIDI ACTIVE' : 'KEYBOARD EMUL')}</span>
+           <div className={`w-3 h-3 rounded-full transition-colors duration-300 ${activeInput ? 'bg-slate-900' : (isConnected ? 'bg-green-500 shadow-[0_0_15px_#22c55e]' : 'bg-red-500 shadow-[0_0_15px_#f43f5e]')}`} />
+           <span className={`text-[10px] font-black tracking-widest uppercase ${!activeInput && isConnected ? 'text-slate-300' : ''}`}>{activeInput ? 'INPUT DETECTED' : (isConnected ? 'MIDI CONNECTED' : 'NO MIDI DEVICE')}</span>
         </div>
       </header>
 
@@ -602,10 +646,22 @@ const App = () => {
 
           <div className="text-center">
             <label className="text-[9px] font-black text-slate-600 uppercase block mb-3 tracking-widest">Time Meter</label>
-            <div className="flex items-center gap-4">
-              <button onClick={()=>setTimeSig(s=>({beats: Math.max(2, s.beats - 1)}))} className="w-9 h-9 bg-slate-800 rounded-xl text-lg font-black hover:bg-slate-700 transition-colors">-</button>
-              <span className="text-3xl font-mono font-black w-12 tabular-nums">{timeSig.beats}/4</span>
-              <button onClick={()=>setTimeSig(s=>({beats: Math.min(7, s.beats + 1)}))} className="w-9 h-9 bg-slate-800 rounded-xl text-lg font-black hover:bg-slate-700 transition-colors">+</button>
+            <div className="flex items-center gap-2">
+              <select
+                  value={timeSig.beats}
+                  onChange={(e) => setTimeSig(prev => ({...prev, beats: parseInt(e.target.value)}))}
+                  className="h-9 bg-slate-800 rounded-xl text-sm font-black text-center outline-none border border-slate-700 focus:border-slate-500 text-slate-100"
+              >
+                  {[1,2,3,4,6,9,12].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <span className="text-slate-600 font-black">/</span>
+              <select
+                  value={timeSig.value}
+                  onChange={(e) => setTimeSig(prev => ({...prev, value: parseInt(e.target.value)}))}
+                  className="h-9 bg-slate-800 rounded-xl text-sm font-black text-center outline-none border border-slate-700 focus:border-slate-500 text-slate-100"
+              >
+                  {[2,4,8].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
             </div>
           </div>
 
