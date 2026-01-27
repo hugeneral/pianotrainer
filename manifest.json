@@ -1,0 +1,21 @@
+{
+  "name": "Piano Trainer Pro",
+  "short_name": "PianoPro",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3221/3221764.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3221/3221764.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
