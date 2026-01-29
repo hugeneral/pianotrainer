@@ -123,7 +123,9 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
   }, [onDebugLog]);
 
   const buildTex = useCallback((recordedNotes: RecordedNote[]) => {
-    let tex = `\\tempo ${tempo}\r\n`;
+    // Explicitly set metadata to empty strings to suppress default headers like "Guitar Standard Tuning"
+    let tex = `\\title " " \\subtitle " " \\artist " " \\album " " \\words " " \\music " " \\copyright " " \r\n`;
+    tex += `\\tempo ${tempo}\r\n`;
     tex += `\\ts ${timeSig.beats} ${timeSig.value} \\clef treble `; 
 
     const sixteenthsPerBeat = 16 / timeSig.value;
@@ -131,29 +133,44 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
     const totalSixteenths = measures * measureSixteenths;
     const texMetadata: any[] = [];
 
+    // 1. Sort notes by time for linear processing
+    const getNotePos = (n: RecordedNote) => (n.measure * measureSixteenths) + (n.beatIndex * sixteenthsPerBeat) + n.sixteenthIndex;
+    const sortedNotes = [...recordedNotes].sort((a, b) => getNotePos(a) - getNotePos(b));
+
     let currentSixteenth = 0;
+    
+    // 2. Linear scan of the entire timeline
     while (currentSixteenth < totalSixteenths) {
       const inMeasureIdx = currentSixteenth % measureSixteenths;
       const remainingInMeasure = measureSixteenths - inMeasureIdx;
       
-      const startsAtSlot = recordedNotes.filter(n => 
-        (n.measure * measureSixteenths) + (n.beatIndex * sixteenthsPerBeat) + n.sixteenthIndex === currentSixteenth
-      );
+      // Check for note(s) starting exactly at this slot
+      const startsAtSlot = sortedNotes.filter(n => Math.abs(getNotePos(n) - currentSixteenth) < 0.1);
 
       if (startsAtSlot.length > 0) {
+        // --- NOTE DETECTED ---
         const rawDur = Math.max(...startsAtSlot.map(n => n.durationSixteenths));
         
-        let snappedDur = 1;
+        // Duration Logic: Fit into measure, and optionally stop at next note (simple monophonic view)
+        // Find next note start to see if we need to cut short
+        const nextNote = sortedNotes.find(n => getNotePos(n) > currentSixteenth + 0.1);
+        const distToNext = nextNote ? getNotePos(nextNote) - currentSixteenth : totalSixteenths - currentSixteenth;
+        
+        // We ensure we don't cross bar lines (remainingInMeasure)
+        const maxDur = Math.min(rawDur, remainingInMeasure); 
+
+        // Snap to largest standard duration
+        let writeDur = 1;
         const allowed = [16, 8, 4, 2, 1];
         for (const d of allowed) {
-            if (d <= rawDur && d <= remainingInMeasure) {
-                snappedDur = d;
+            if (d <= maxDur) {
+                writeDur = d;
                 break;
             }
         }
         
-        const rhythm = DURATION_MAP[snappedDur] || '16';
-        
+        // Render Note
+        const rhythm = DURATION_MAP[writeDur] || '16';
         if (startsAtSlot.length === 1) {
           const noteName = MIDI_TO_ALPHATAB[startsAtSlot[0].midi] || 'c4';
           tex += `${noteName}.${rhythm} `;
@@ -168,24 +185,34 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
         }
         
         texMetadata.push({ hits: startsAtSlot });
-        currentSixteenth += snappedDur;
-      } else {
-        const activeNotes = recordedNotes.filter(n => {
-          const startIdx = (n.measure * measureSixteenths) + (n.beatIndex * sixteenthsPerBeat) + n.sixteenthIndex;
-          const endIdx = startIdx + n.durationSixteenths;
-          return currentSixteenth > startIdx && currentSixteenth < endIdx;
-        });
+        currentSixteenth += writeDur;
 
-        if (activeNotes.length > 0) {
-          currentSixteenth++;
-        } else {
-          tex += "r.16 ";
-          texMetadata.push({ hits: null });
-          currentSixteenth++;
+      } else {
+        // --- NO NOTE (REST NEEDED) ---
+        // Calculate gap size until next note or end of measure
+        const nextNote = sortedNotes.find(n => getNotePos(n) > currentSixteenth + 0.1);
+        const distToNext = nextNote ? getNotePos(nextNote) - currentSixteenth : totalSixteenths - currentSixteenth;
+        
+        const available = Math.min(distToNext, remainingInMeasure);
+
+        // Find largest rest that fits
+        let writeDur = 1;
+        const allowed = [16, 8, 4, 2, 1];
+        for (const d of allowed) {
+            if (d <= available) {
+                writeDur = d;
+                break;
+            }
         }
+
+        const rhythm = DURATION_MAP[writeDur] || '16';
+        tex += `r.${rhythm} `;
+        texMetadata.push({ hits: null });
+        currentSixteenth += writeDur;
       }
 
-      if (currentSixteenth > 0 && currentSixteenth % measureSixteenths === 0 && currentSixteenth < totalSixteenths) {
+      // Add bar lines
+      if (currentSixteenth > 0 && currentSixteenth % measureSixteenths === 0) {
         tex += "| ";
       }
     }
@@ -214,7 +241,7 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
       apiRef.current = new AlphaTabApi(containerRef.current, {
         display: {
           staveProfile: 'Score',
-          layoutMode: 'horizontal',
+          layoutMode: 'page',
           scale: 1.25,
           padding: [20, 20, 20, 20],
           resources: { 
@@ -445,6 +472,38 @@ const App = () => {
 
   const stop = useCallback(() => {
     if (metTimer.current) clearTimeout(metTimer.current);
+
+    // Flush any active notes that are still held down
+    const now = performance.now();
+    const flushedNotes: RecordedNote[] = [];
+    const beatDurMs = (60.0 / tempoRef.current) * 1000;
+    const sixteenthsPerBeat = 16 / timeSigRef.current.value;
+    const sixteenthDurMs = beatDurMs / sixteenthsPerBeat;
+
+    activeNotes.current.forEach((startData, midi) => {
+      // Force end time to now (or slightly earlier to avoid overrun)
+      const endTime = now - LATENCY_MS;
+      const durMs = endTime - startData.startTime;
+      const durationSixteenths = Math.max(1, Math.round(durMs / sixteenthDurMs));
+      
+      if (startData.mIdx >= 0 && startData.mIdx < measuresRef.current) {
+         flushedNotes.push({
+            id: Math.random().toString(36).substr(2, 9),
+            midi,
+            diffMs: startData.diffMs,
+            measure: startData.mIdx,
+            beatIndex: startData.bIdx,
+            sixteenthIndex: startData.sIdx,
+            durationSixteenths
+         });
+      }
+    });
+    
+    if (flushedNotes.length > 0) {
+      setRecordedNotes(prev => [...prev, ...flushedNotes]);
+    }
+    activeNotes.current.clear();
+
     setIsPlaying(false);
     setIsIntro(false);
     state.current.isRecording = false;
@@ -478,6 +537,13 @@ const App = () => {
   const tick = useCallback(() => {
     if (!audioCtx.current) return;
     while (state.current.nextNoteTime < audioCtx.current.currentTime + 0.1) {
+      // Check if we have finished all measures (measureCount starts at 0 for bar 1)
+      // We add 1 to account for the mandatory intro bar.
+      if (state.current.measureCount >= measuresRef.current + 1) {
+        setTimeout(stop, 500);
+        return;
+      }
+
       const time = state.current.nextNoteTime;
       const isDown = state.current.currentBeat === 0;
       
@@ -509,10 +575,6 @@ const App = () => {
       if (state.current.currentBeat >= timeSigRef.current.beats) {
         state.current.currentBeat = 0; 
         state.current.measureCount++;
-        if (state.current.measureCount >= (measuresRef.current + 1)) { 
-          setTimeout(stop, 500); 
-          return; 
-        }
       }
     }
     metTimer.current = setTimeout(tick, 25);
@@ -556,8 +618,7 @@ const App = () => {
       const perfTime = midiSignal.timeStamp - LATENCY_MS;
 
       // 2. Recording Logic
-      if (state.current.isRecording) {
-        if (isNoteOn) {
+      if (state.current.isRecording && isNoteOn) {
           let bestBeatIdx = -1;
           let minDist = Infinity;
           state.current.beatTimes.forEach((bt, idx) => {
@@ -587,10 +648,13 @@ const App = () => {
             
             activeNotes.current.set(midi, { startTime: perfTime, mIdx, bIdx, sIdx: fSixteenIdx, diffMs: rawOffset - (sixteenIdxRaw * sixteenthDurMs) });
           }
-        } else if (isNoteOff) {
+      } 
+      
+      // Process Note OFF even if recording just stopped, to capture tail notes
+      if (isNoteOff) {
           const startData = activeNotes.current.get(midi);
           if (startData) {
-            const endTime = perfTime; // Use adjusted time for note off as well
+            const endTime = perfTime; 
             const beatDurMs = (60.0 / tempo) * 1000;
             const sixteenthsPerBeat = 16 / timeSig.value;
             const sixteenthDurMs = beatDurMs / sixteenthsPerBeat;
@@ -606,7 +670,6 @@ const App = () => {
             }
             activeNotes.current.delete(midi);
           }
-        }
       }
 
       return () => clearTimeout(timer);
