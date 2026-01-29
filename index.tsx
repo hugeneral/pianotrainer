@@ -123,8 +123,12 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
   }, [onDebugLog]);
 
   const buildTex = useCallback((recordedNotes: RecordedNote[]) => {
-    // Explicitly set metadata to empty strings to suppress default headers like "Guitar Standard Tuning"
-    let tex = `\\title " " \\subtitle " " \\artist " " \\album " " \\words " " \\music " " \\copyright " " \r\n`;
+    // 1. Set headers to empty strings (use "" instead of " ")
+    // 2. Add \track " " to override the default "Guitar" name
+    // 3. Add \tuning none to hide the tuning description
+    let tex = `\\title "" \\subtitle "" \\artist "" \\album "" \\words "" \\music "" \\copyright "" \r\n`;
+    tex += `\\track " " \r\n`; 
+    tex += `\\tuning none \r\n`; 
     tex += `\\tempo ${tempo}\r\n`;
     tex += `\\ts ${timeSig.beats} ${timeSig.value} \\clef treble `; 
 
@@ -250,6 +254,10 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
             secondaryColor: '#64748b'
           }
         },
+        layout: {
+          hideTuning: true,
+          hideTrackNames: true
+        }
       });
 
       apiRef.current.scoreLoaded.on((score: any) => {
