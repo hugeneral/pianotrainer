@@ -21,7 +21,6 @@ const DURATION_MAP: Record<number, string> = {
   1: '16', 2: '8', 4: '4', 8: '2', 16: '1'
 };
 
-const LATENCY_MS = 60; // Global latency compensation for analysis
 const PERFECT_WINDOW_MS = 35; // Window in ms to consider a note perfect
 
 const getTimingColorHex = (diffMs: number): string => {
@@ -364,7 +363,11 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
     const { tex, texMetadata } = buildTex(notes);
     metadataRef.current = texMetadata;
     
-    if (onDebugLog) onDebugLog(`Generated AlphaTex:\n${tex}\n\nMetadata Slots: ${texMetadata.length}`);
+    // Only log AlphaTex generation if we actually have notes to display, 
+    // effectively silencing this log during calibration/latency tests which have 0 notes.
+    if (onDebugLog && notes.length > 0) {
+      onDebugLog(`Generated AlphaTex:\n${tex}\n\nMetadata Slots: ${texMetadata.length}`);
+    }
 
     try {
       apiRef.current.tex(tex);
@@ -402,7 +405,9 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
                 <div className="w-20 h-20 rounded-full border-2 border-slate-500/30 flex items-center justify-center animate-pulse">
                    <div className="w-5 h-5 bg-slate-400 rounded-full shadow-[0_0_25px_#64748b]" />
                 </div>
-                <p className="text-slate-500 font-mono text-[11px] tracking-[0.6em] uppercase mt-8 font-black ml-[0.6em] animate-pulse">Recording Performance...</p>
+                <p className="text-slate-500 font-mono text-[11px] tracking-[0.6em] uppercase mt-8 font-black ml-[0.6em] animate-pulse">
+                    {notes.length === 0 && !isSessionActive ? "System Idle" : "Recording Performance..."}
+                </p>
                 <p className="text-slate-400 text-[9px] mt-2 font-bold uppercase tracking-widest">Score will appear after STOP</p>
               </div>
             )}
@@ -451,12 +456,16 @@ const App = () => {
   const [tempo, setTempo] = useState(100);
   const [timeSig, setTimeSig] = useState({ beats: 4, value: 4 });
   const [measures, setMeasures] = useState(4);
+  const [latencyMs, setLatencyMs] = useState(0); // State for latency (defaults to 0)
   const [isPlaying, setIsPlaying] = useState(false);
   const [isIntro, setIsIntro] = useState(false);
   const [recordedNotes, setRecordedNotes] = useState<RecordedNote[]>([]);
   const [visualBeat, setVisualBeat] = useState(false);
   const [activeInput, setActiveInput] = useState(false);
   const [debugInfo, setDebugInfo] = useState<string>('');
+
+  const isLatencyTesting = useRef(false);
+  const sessionNotesRef = useRef<RecordedNote[]>([]); // Track all notes for calculation
 
   const { isConnected, midiSignal } = useMidi();
   const audioCtx = useRef<AudioContext | null>(null);
@@ -490,12 +499,12 @@ const App = () => {
 
     activeNotes.current.forEach((startData, midi) => {
       // Force end time to now (or slightly earlier to avoid overrun)
-      const endTime = now - LATENCY_MS;
+      const endTime = now - latencyMs;
       const durMs = endTime - startData.startTime;
       const durationSixteenths = Math.max(1, Math.round(durMs / sixteenthDurMs));
       
       if (startData.mIdx >= 0 && startData.mIdx < measuresRef.current) {
-         flushedNotes.push({
+         const newNote = {
             id: Math.random().toString(36).substr(2, 9),
             midi,
             diffMs: startData.diffMs,
@@ -503,19 +512,40 @@ const App = () => {
             beatIndex: startData.bIdx,
             sixteenthIndex: startData.sIdx,
             durationSixteenths
-         });
+         };
+         flushedNotes.push(newNote);
+         sessionNotesRef.current.push(newNote);
       }
     });
     
-    if (flushedNotes.length > 0) {
+    // Only update visual notes if NOT in latency test mode
+    if (flushedNotes.length > 0 && !isLatencyTesting.current) {
       setRecordedNotes(prev => [...prev, ...flushedNotes]);
     }
     activeNotes.current.clear();
 
+    if (isLatencyTesting.current) {
+       // Calc average latency
+       // Assuming user played on the beat. diffMs is (perfTime - beatTime).
+       // With latencyMs = 0, diffMs = raw latency + user error.
+       // Average over many notes cancels user error.
+       if (sessionNotesRef.current.length > 0) {
+           const sum = sessionNotesRef.current.reduce((acc, n) => acc + n.diffMs, 0);
+           const avg = sum / sessionNotesRef.current.length;
+           const newLatency = Math.round(avg);
+           setLatencyMs(newLatency);
+           // NOTE: ScoreDisplay suppresses log when notes are empty, so this won't be overwritten.
+           setDebugInfo(`[Calibration] Latency Test Complete.\nDetected Avg Offset: ${avg.toFixed(2)}ms\nNew Latency Compensation: ${newLatency}ms\n`);
+       } else {
+           setDebugInfo(`[Calibration] Failed: No notes detected.\n`);
+       }
+       isLatencyTesting.current = false;
+    }
+
     setIsPlaying(false);
     setIsIntro(false);
     state.current.isRecording = false;
-  }, []);
+  }, [latencyMs]);
 
   const playSynth = useCallback((midi: number) => {
     if (!audioCtx.current) audioCtx.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -594,7 +624,22 @@ const App = () => {
     if (audioCtx.current.state === 'suspended') audioCtx.current.resume();
     state.current = { nextNoteTime: audioCtx.current.currentTime + 0.1, currentBeat: 0, measureCount: 0, isRecording: false, beatTimes: [] };
     setRecordedNotes([]);
+    sessionNotesRef.current = [];
     setIsPlaying(true); setIsIntro(true); tick();
+  };
+
+  const testLatency = () => {
+    if (isPlaying) stop();
+    // Configure for latency test
+    setMeasures(4);
+    setTimeSig({ beats: 4, value: 4 });
+    setLatencyMs(0); 
+    isLatencyTesting.current = true;
+    setDebugInfo("[Calibration] Starting Latency Test...\nPlease tap/play exactly on the metronome click for 4 bars.");
+    
+    // Defer start slightly to allow state updates to settle if any refs depend on them immediately
+    // although refs are updated in useEffect, so we need a tick.
+    setTimeout(() => onStart(), 100);
   };
 
   useEffect(() => {
@@ -623,7 +668,8 @@ const App = () => {
       const timer = setTimeout(() => setActiveInput(false), 150);
 
       // Latency compensation: Adjust input time by fixed amount to correct for system delay
-      const perfTime = midiSignal.timeStamp - LATENCY_MS;
+      // Use state latencyMs
+      const perfTime = midiSignal.timeStamp - latencyMs;
 
       // 2. Recording Logic
       if (state.current.isRecording && isNoteOn) {
@@ -671,10 +717,15 @@ const App = () => {
             const durationSixteenths = Math.max(1, Math.round(durMs / sixteenthDurMs));
             
             if (startData.mIdx >= 0 && startData.mIdx < measures) {
-              setRecordedNotes(prev => [...prev, {
+              const newNote = {
                 id: Math.random().toString(36).substr(2, 9),
                 midi, diffMs: startData.diffMs, measure: startData.mIdx, beatIndex: startData.bIdx, sixteenthIndex: startData.sIdx, durationSixteenths
-              }]);
+              };
+              // Only add to visual staff if NOT testing latency
+              if (!isLatencyTesting.current) {
+                setRecordedNotes(prev => [...prev, newNote]);
+              }
+              sessionNotesRef.current.push(newNote);
             }
             activeNotes.current.delete(midi);
           }
@@ -682,7 +733,7 @@ const App = () => {
 
       return () => clearTimeout(timer);
     }
-  }, [midiSignal, timeSig.beats, timeSig.value, measures, tempo, playSynth, isConnected]);
+  }, [midiSignal, timeSig.beats, timeSig.value, measures, tempo, playSynth, isConnected, latencyMs]);
 
   return (
     <div className="max-w-6xl mx-auto h-full p-6 flex flex-col gap-6 overflow-y-auto bg-black text-slate-100">
@@ -742,6 +793,7 @@ const App = () => {
               <button onClick={()=>setMeasures(m=>Math.max(1,m-1))} className="w-9 h-9 bg-slate-800 rounded-xl text-lg font-black hover:bg-slate-700 transition-colors">-</button>
               <span className="text-3xl font-mono font-black w-10 tabular-nums">{measures}</span>
               <button onClick={()=>setMeasures(m=>Math.min(32,m+1))} className="w-9 h-9 bg-slate-800 rounded-xl text-lg font-black hover:bg-slate-700 transition-colors">+</button>
+              <button onClick={testLatency} className="ml-4 px-4 h-9 bg-slate-800 border border-slate-700 rounded-xl text-[9px] font-black text-slate-300 uppercase tracking-wider hover:bg-slate-700 hover:text-white transition-all whitespace-nowrap">Test Latency</button>
             </div>
           </div>
         </div>
