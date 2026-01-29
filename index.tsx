@@ -255,7 +255,7 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
                           const b = parseInt(colorHex.slice(5, 7), 16);
                           
                           try {
-                            const color = new Color(255, r, g, b);
+                            const color = new Color(r, g, b, 255);
 
                             // Apply to Beat (Beams, Flags, and Stems for beamed notes)
                             if (BeatStyle && BeatSubElement) {
