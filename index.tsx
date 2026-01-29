@@ -154,11 +154,6 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
         // --- NOTE DETECTED ---
         const rawDur = Math.max(...startsAtSlot.map(n => n.durationSixteenths));
         
-        // Duration Logic: Fit into measure, and optionally stop at next note (simple monophonic view)
-        // Find next note start to see if we need to cut short
-        const nextNote = sortedNotes.find(n => getNotePos(n) > currentSixteenth + 0.1);
-        const distToNext = nextNote ? getNotePos(nextNote) - currentSixteenth : totalSixteenths - currentSixteenth;
-        
         // We ensure we don't cross bar lines (remainingInMeasure)
         const maxDur = Math.min(rawDur, remainingInMeasure); 
 
