@@ -37,36 +37,13 @@ const getTimingLabel = (diffMs: number): string => {
 const useMidi = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [midiSignal, setMidiSignal] = useState<{data: number[], timeStamp: number, source: 'midi' | 'keyboard'} | null>(null);
+  const [midiSupported, setMidiSupported] = useState(false);
+  const [midiAccess, setMidiAccess] = useState<any>(null);
 
   useEffect(() => {
-    let midiAccess: any = null;
-    
-    const onMessage = (msg: any) => {
-        const data = Array.from(msg.data) as number[];
-        // Filter out Active Sensing (254/0xFE) and Clock (248/0xF8) messages which can spam the app
-        if (data[0] >= 240) return;
-        setMidiSignal({ data, timeStamp: performance.now(), source: 'midi' });
-    };
-
-    const onStateChange = () => {
-      if (!midiAccess) return;
-      const inputs = Array.from(midiAccess.inputs.values());
-      setIsConnected(inputs.length > 0);
-      // Re-bind to ensure new devices are caught
-      inputs.forEach((input: any) => { 
-          input.onmidimessage = onMessage; 
-      });
-    };
-
+    // Check for MIDI support safely
     if ((navigator as any).requestMIDIAccess) {
-      (navigator as any).requestMIDIAccess({ sysex: false }).then((access: any) => {
-        midiAccess = access;
-        access.onstatechange = onStateChange;
-        onStateChange();
-      }).catch((e: any) => {
-          console.error("MIDI Access Failed", e);
-          setIsConnected(false);
-      });
+      setMidiSupported(true);
     }
 
     const handleKey = (e: KeyboardEvent, isDown: boolean) => {
@@ -91,7 +68,38 @@ const useMidi = () => {
     };
   }, []);
 
-  return { isConnected, midiSignal };
+  const connectMidi = useCallback(async () => {
+    if (!(navigator as any).requestMIDIAccess) return;
+    try {
+      const access = await (navigator as any).requestMIDIAccess({ sysex: false });
+      setMidiAccess(access);
+      console.log("MIDI connected!");
+
+      const onMessage = (msg: any) => {
+          const data = Array.from(msg.data) as number[];
+          // Filter out Active Sensing (254/0xFE) and Clock (248/0xF8) messages which can spam the app
+          if (data[0] >= 240) return;
+          setMidiSignal({ data, timeStamp: performance.now(), source: 'midi' });
+      };
+
+      const onStateChange = () => {
+        const inputs = Array.from(access.inputs.values());
+        setIsConnected(inputs.length > 0);
+        // Re-bind to ensure new devices are caught
+        inputs.forEach((input: any) => { 
+            input.onmidimessage = onMessage; 
+        });
+      };
+
+      access.onstatechange = onStateChange;
+      onStateChange();
+    } catch (e: any) {
+        console.error("MIDI Access Failed", e);
+        alert("MIDI Access Denied or Not Supported");
+    }
+  }, []);
+
+  return { isConnected, midiSignal, midiSupported, midiAccess, connectMidi };
 };
 
 interface RecordedNote {
@@ -189,9 +197,7 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
         // --- NO NOTE (REST NEEDED) ---
         // Calculate gap size until next note or end of measure
         const nextNote = sortedNotes.find(n => getNotePos(n) > currentSixteenth + 0.1);
-        const distToNext = nextNote ? getNotePos(nextNote) - currentSixteenth : totalSixteenths - currentSixteenth;
-        
-        const available = Math.min(distToNext, remainingInMeasure);
+        const available = Math.min(nextNote ? getNotePos(nextNote) - currentSixteenth : totalSixteenths - currentSixteenth, remainingInMeasure);
 
         // Find largest rest that fits
         let writeDur = 1;
@@ -462,7 +468,7 @@ const App = () => {
   const isLatencyTesting = useRef(false);
   const sessionNotesRef = useRef<RecordedNote[]>([]); // Track all notes for calculation
 
-  const { isConnected, midiSignal } = useMidi();
+  const { isConnected, midiSignal, midiSupported, midiAccess, connectMidi } = useMidi();
   const audioCtx = useRef<AudioContext | null>(null);
   const metTimer = useRef<any>(null);
   const activeNotes = useRef<Map<number, any>>(new Map());
@@ -737,9 +743,26 @@ const App = () => {
           <h1 className="text-4xl font-black italic tracking-tighter text-slate-400 uppercase leading-none drop-shadow-[0_0_20px_rgba(100,116,139,0.4)]">PIANO<span className="text-white">TRAINER</span></h1>
           <p className="text-[9px] font-black tracking-[0.5em] text-slate-500 uppercase mt-4">Precision Rhythm Lab</p>
         </div>
-        <div className={`flex items-center gap-5 px-7 py-4 rounded-2xl border transition-all duration-150 ${activeInput ? 'bg-slate-500 text-slate-900 scale-105 border-slate-300 shadow-[0_0_30px_#64748b]' : 'bg-slate-900/60 border-slate-800 shadow-2xl text-slate-400'}`}>
-           <div className={`w-3 h-3 rounded-full transition-colors duration-300 ${activeInput ? 'bg-slate-900' : (isConnected ? 'bg-green-500 shadow-[0_0_15px_#22c55e]' : 'bg-red-500 shadow-[0_0_15px_#f43f5e]')}`} />
-           <span className={`text-[10px] font-black tracking-widest uppercase ${!activeInput && isConnected ? 'text-slate-300' : ''}`}>{activeInput ? 'INPUT DETECTED' : (isConnected ? 'MIDI CONNECTED' : 'NO MIDI DEVICE')}</span>
+        
+        <div className="flex items-center gap-4">
+            {!midiAccess && (
+              <button 
+                onClick={connectMidi} 
+                disabled={!midiSupported}
+                className={`px-6 py-4 rounded-2xl font-black text-[10px] tracking-widest uppercase shadow-2xl transition-all active:scale-95 ${midiSupported ? 'bg-slate-700 hover:bg-slate-600 text-white shadow-[0_0_20px_rgba(71,85,105,0.4)]' : 'bg-slate-900 text-slate-600 cursor-not-allowed border border-slate-800'}`}
+              >
+                {midiSupported ? "Connect MIDI Keyboard" : "MIDI Not Supported"}
+              </button>
+            )}
+
+            {(midiAccess || activeInput) && (
+              <div className={`flex items-center gap-5 px-7 py-4 rounded-2xl border transition-all duration-150 ${activeInput ? 'bg-slate-500 text-slate-900 scale-105 border-slate-300 shadow-[0_0_30px_#64748b]' : 'bg-slate-900/60 border-slate-800 shadow-2xl text-slate-400'}`}>
+                 <div className={`w-3 h-3 rounded-full transition-colors duration-300 ${activeInput ? 'bg-slate-900' : (isConnected ? 'bg-green-500 shadow-[0_0_15px_#22c55e]' : 'bg-red-500 shadow-[0_0_15px_#f43f5e]')}`} />
+                 <span className={`text-[10px] font-black tracking-widest uppercase ${!activeInput && isConnected ? 'text-slate-300' : ''}`}>
+                    {activeInput ? 'INPUT DETECTED' : (isConnected ? 'MIDI CONNECTED' : 'NO MIDI DEVICE')}
+                 </span>
+              </div>
+            )}
         </div>
       </header>
 
