@@ -5,6 +5,11 @@ import ReactDOM from 'react-dom/client';
  * MUSIC DATA & CONFIG
  */
 const MIDI_TO_ALPHATAB: Record<number, string> = {
+  // Extended Lower Range for -24 semitone shift
+  12: 'c1', 13: 'c#1', 14: 'd1', 15: 'd#1', 16: 'e1', 17: 'f1', 18: 'f#1', 19: 'g1', 20: 'g#1', 21: 'a1', 22: 'a#1', 23: 'b1',
+  24: 'c2', 25: 'c#2', 26: 'd2', 27: 'd#2', 28: 'e2', 29: 'f2', 30: 'f#2', 31: 'g2', 32: 'g#2', 33: 'a2', 34: 'a#2', 35: 'b2',
+  
+  // Original Range
   36: 'c3', 37: 'c#3', 38: 'd3', 39: 'd#3', 40: 'e3', 41: 'f3', 42: 'f#3', 43: 'g3', 44: 'g#3', 45: 'a3', 46: 'a#3', 47: 'b3',
   48: 'c4', 49: 'c#4', 50: 'd4', 51: 'd#4', 52: 'e4', 53: 'f4', 54: 'f#4', 55: 'g4', 56: 'g#4', 57: 'a4', 58: 'a#4', 59: 'b4',
   60: 'c5', 61: 'c#5', 62: 'd5', 63: 'd#5', 64: 'e5', 65: 'f5', 66: 'f#5', 67: 'g5', 68: 'g#5', 69: 'a5', 70: 'a#5', 71: 'b5',
@@ -68,36 +73,49 @@ const useMidi = () => {
     };
   }, []);
 
-  const connectMidi = useCallback(async () => {
-    if (!(navigator as any).requestMIDIAccess) return;
+const connectMidi = useCallback(async () => {
+    if (!(navigator as any).requestMIDIAccess) {
+      alert("MIDI API not found in this browser.");
+      return;
+    }
+
     try {
-      const access = await (navigator as any).requestMIDIAccess({ sysex: false });
+      // 1. Force sysex: true - required for many iPad MIDI shims to "see" USB devices
+      const access = await (navigator as any).requestMIDIAccess({ sysex: true });
       setMidiAccess(access);
-      console.log("MIDI connected!");
+      console.log("MIDI Access Granted");
 
       const onMessage = (msg: any) => {
-          const data = Array.from(msg.data) as number[];
-          // Filter out Active Sensing (254/0xFE) and Clock (248/0xF8) messages which can spam the app
-          if (data[0] >= 240) return;
-          setMidiSignal({ data, timeStamp: performance.now(), source: 'midi' });
+        const data = Array.from(msg.data) as number[];
+        // Filter out MIDI Clock (248), Active Sensing (254), and other system messages (>= 240)
+        if (data[0] >= 240) return;
+        setMidiSignal({ data, timeStamp: performance.now(), source: 'midi' });
       };
 
-      const onStateChange = () => {
-        const inputs = Array.from(access.inputs.values());
-        setIsConnected(inputs.length > 0);
-        // Re-bind to ensure new devices are caught
-        inputs.forEach((input: any) => { 
-            input.onmidimessage = onMessage; 
+      const updateInputs = () => {
+        const inputs: any[] = [];
+        // Use forEach instead of Array.from(values()) for older iPad browser compatibility
+        access.inputs.forEach((input: any) => {
+          input.onmidimessage = onMessage;
+          inputs.push(input);
         });
+        
+        console.log("Detected MIDI inputs:", inputs.length);
+        setIsConnected(inputs.length > 0);
       };
 
-      access.onstatechange = onStateChange;
-      onStateChange();
+      // 2. Listen for future plugs/unplugs
+      access.onstatechange = updateInputs;
+
+      // 3. Run immediately, then again in 200ms to catch "late" shim initialization
+      updateInputs();
+      setTimeout(updateInputs, 200);
+
     } catch (e: any) {
-        console.error("MIDI Access Failed", e);
-        alert("MIDI Access Denied or Not Supported");
+      console.error("MIDI Access Failed", e);
+      alert("MIDI Connection failed. Please ensure 'SysEx' is enabled in your browser settings.");
     }
-  }, []);
+  }, [setMidiSignal]); // Added setMidiSignal to dependencies for best practice
 
   return { isConnected, midiSignal, midiSupported, midiAccess, connectMidi };
 };
@@ -649,7 +667,7 @@ const App = () => {
       
       // Real MIDI devices often send Middle C as 60.
       // If the user feels this is too high on the score, we shift down by an octave (12 semitones).
-      const midi = midiSignal.source === 'midi' ? rawMidi - 12 : rawMidi;
+      const midi = midiSignal.source === 'midi' ? rawMidi - 24 : rawMidi;
 
       // MASK the status byte to ignore channel information (0x90 vs 0x91 etc)
       const command = statusByte & 0xF0; 
