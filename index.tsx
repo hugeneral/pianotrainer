@@ -4,8 +4,10 @@ import ReactDOM from 'react-dom/client';
 /**
  * MUSIC DATA & CONFIG
  */
-const MIDI_TO_ALPHATAB: Record<number, string> = {
-  // Extended Lower Range for -24 semitone shift
+
+// Mapping for SHARPS mode (Default MIDI numbers to AlphaTex sharp notation)
+const MIDI_TO_ALPHATAB_SHARPS: Record<number, string> = {
+  // Extended Lower Range
   12: 'c1', 13: 'c#1', 14: 'd1', 15: 'd#1', 16: 'e1', 17: 'f1', 18: 'f#1', 19: 'g1', 20: 'g#1', 21: 'a1', 22: 'a#1', 23: 'b1',
   24: 'c2', 25: 'c#2', 26: 'd2', 27: 'd#2', 28: 'e2', 29: 'f2', 30: 'f#2', 31: 'g2', 32: 'g#2', 33: 'a2', 34: 'a#2', 35: 'b2',
   
@@ -15,6 +17,20 @@ const MIDI_TO_ALPHATAB: Record<number, string> = {
   60: 'c5', 61: 'c#5', 62: 'd5', 63: 'd#5', 64: 'e5', 65: 'f5', 66: 'f#5', 67: 'g5', 68: 'g#5', 69: 'a5', 70: 'a#5', 71: 'b5',
   72: 'c6', 73: 'c#6', 74: 'd6', 75: 'd#6', 76: 'e6', 77: 'f6', 78: 'f#6', 79: 'g6', 80: 'g#6', 81: 'a6', 82: 'a#6', 83: 'b6',
   84: 'c7', 85: 'c#7', 86: 'd7', 87: 'd#7', 88: 'e7', 89: 'f7', 90: 'f#7', 91: 'g7', 92: 'g#7', 93: 'a7', 94: 'a#7', 95: 'b7'
+};
+
+// Mapping for FLATS mode (MIDI numbers to AlphaTex flat notation)
+const MIDI_TO_ALPHATAB_FLATS: Record<number, string> = {
+  // Extended Lower Range
+  12: 'c1', 13: 'db1', 14: 'd1', 15: 'eb1', 16: 'e1', 17: 'f1', 18: 'gb1', 19: 'g1', 20: 'ab1', 21: 'a1', 22: 'bb1', 23: 'b1',
+  24: 'c2', 25: 'db2', 26: 'd2', 27: 'eb2', 28: 'e2', 29: 'f2', 30: 'gb2', 31: 'g2', 32: 'ab2', 33: 'a2', 34: 'bb2', 35: 'b2',
+  
+  // Original Range
+  36: 'c3', 37: 'db3', 38: 'd3', 39: 'eb3', 40: 'e3', 41: 'f3', 42: 'gb3', 43: 'g3', 44: 'ab3', 45: 'a3', 46: 'bb3', 47: 'b3',
+  48: 'c4', 49: 'db4', 50: 'd4', 51: 'eb4', 52: 'e4', 53: 'f4', 54: 'gb4', 55: 'g4', 56: 'ab4', 57: 'a4', 58: 'bb4', 59: 'b4',
+  60: 'c5', 61: 'db5', 62: 'd5', 63: 'eb5', 64: 'e5', 65: 'f5', 66: 'gb5', 67: 'g5', 68: 'ab5', 69: 'a5', 70: 'bb5', 71: 'b5',
+  72: 'c6', 73: 'db6', 74: 'd6', 75: 'eb6', 76: 'e6', 77: 'f6', 78: 'gb6', 79: 'g6', 80: 'ab6', 81: 'a6', 82: 'bb6', 83: 'b6',
+  84: 'c7', 85: 'db7', 86: 'd7', 87: 'eb7', 88: 'e7', 89: 'f7', 90: 'gb7', 91: 'g7', 92: 'ab7', 93: 'a7', 94: 'bb7', 95: 'b7'
 };
 
 const KBD_MAP: Record<string, number> = {
@@ -115,7 +131,7 @@ const connectMidi = useCallback(async () => {
       console.error("MIDI Access Failed", e);
       alert("MIDI Connection failed. Please ensure 'SysEx' is enabled in your browser settings.");
     }
-  }, [setMidiSignal]); // Added setMidiSignal to dependencies for best practice
+  }, [setMidiSignal]);
 
   return { isConnected, midiSignal, midiSupported, midiAccess, connectMidi };
 };
@@ -130,7 +146,7 @@ interface RecordedNote {
   durationSixteenths: number; 
 }
 
-const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebugLog }: { notes: RecordedNote[], timeSig: {beats: number, value: number}, measures: number, isSessionActive: boolean, tempo: number, onDebugLog?: React.Dispatch<React.SetStateAction<string>> }) => {
+const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, accidentalMode, onDebugLog }: { notes: RecordedNote[], timeSig: {beats: number, value: number}, measures: number, isSessionActive: boolean, tempo: number, accidentalMode: 'flats' | 'sharps', onDebugLog?: React.Dispatch<React.SetStateAction<string>> }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +164,9 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
   }, [onDebugLog]);
 
   const buildTex = useCallback((recordedNotes: RecordedNote[]) => {
+    // Dynamic map selection based on user preference
+    const noteMap = accidentalMode === 'flats' ? MIDI_TO_ALPHATAB_FLATS : MIDI_TO_ALPHATAB_SHARPS;
+
     // 1. Set headers to empty strings (use "" instead of " ")
     // 2. Add \track " " to override the default "Guitar" name
     // 3. Add \tuning none to hide the tuning description
@@ -196,12 +215,12 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
         // Render Note
         const rhythm = DURATION_MAP[writeDur] || '16';
         if (startsAtSlot.length === 1) {
-          const noteName = MIDI_TO_ALPHATAB[startsAtSlot[0].midi] || 'c4';
+          const noteName = noteMap[startsAtSlot[0].midi] || 'c4';
           tex += `${noteName}.${rhythm} `;
         } else {
           tex += "(";
           startsAtSlot.forEach((h, idx) => {
-            const noteName = MIDI_TO_ALPHATAB[h.midi] || 'c4';
+            const noteName = noteMap[h.midi] || 'c4';
             tex += `${noteName}${idx === startsAtSlot.length - 1 ? '' : ' '}`;
           });
           tex += ").";
@@ -240,7 +259,7 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
     }
 
     return { tex, texMetadata };
-  }, [timeSig.beats, timeSig.value, measures, tempo]);
+  }, [timeSig.beats, timeSig.value, measures, tempo, accidentalMode]);
 
   useLayoutEffect(() => {
     if (!containerRef.current || apiRef.current) return;
@@ -393,14 +412,14 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, onDebu
     } catch (e) {
       console.error("Render failed", e);
     }
-  }, [notes, isSessionActive, timeSig.beats, timeSig.value, measures, error, buildTex, tempo, onDebugLog]);
+  }, [notes, isSessionActive, timeSig.beats, timeSig.value, measures, error, buildTex, tempo, onDebugLog, accidentalMode]);
 
   return (
     <div className="flex-1 min-h-[300px] bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative flex flex-col overflow-hidden shrink-0">
       <div className="flex justify-between items-center mb-4 shrink-0 px-2">
         <div>
           <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-500">Practice Analysis</h2>
-          <p className="text-[11px] text-slate-400 mt-1">Tempo: {tempo} BPM • Meter: {timeSig.beats}/{timeSig.value}</p>
+          <p className="text-[11px] text-slate-400 mt-1">Tempo: {tempo} BPM • Meter: {timeSig.beats}/{timeSig.value} • {accidentalMode === 'flats' ? 'Flats' : 'Sharps'}</p>
         </div>
         {!isSessionActive && notes.length > 0 && (
           <div className="flex gap-4">
@@ -476,6 +495,7 @@ const App = () => {
   const [timeSig, setTimeSig] = useState({ beats: 4, value: 4 });
   const [measures, setMeasures] = useState(4);
   const [latencyMs, setLatencyMs] = useState(0); // State for latency (defaults to 0)
+  const [accidentalMode, setAccidentalMode] = useState<'flats' | 'sharps'>('flats');
   const [isPlaying, setIsPlaying] = useState(false);
   const [isIntro, setIsIntro] = useState(false);
   const [recordedNotes, setRecordedNotes] = useState<RecordedNote[]>([]);
@@ -824,6 +844,24 @@ const App = () => {
           </div>
 
           <div className="text-center">
+             <label className="text-[9px] font-black text-slate-600 uppercase block mb-3 tracking-widest">Key Sig</label>
+             <div className="flex bg-slate-800 p-1 rounded-xl border border-slate-700 h-9 items-center w-32 relative">
+                <button
+                   onClick={() => setAccidentalMode('flats')}
+                   className={`flex-1 h-full rounded-lg text-lg font-serif italic leading-none flex items-center justify-center transition-all z-10 ${accidentalMode === 'flats' ? 'bg-slate-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-400'}`}
+                >
+                  ♭
+                </button>
+                <button
+                   onClick={() => setAccidentalMode('sharps')}
+                   className={`flex-1 h-full rounded-lg text-lg font-serif italic leading-none flex items-center justify-center transition-all z-10 ${accidentalMode === 'sharps' ? 'bg-slate-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-400'}`}
+                >
+                  ♯
+                </button>
+             </div>
+          </div>
+
+          <div className="text-center">
             <label className="text-[9px] font-black text-slate-600 uppercase block mb-3 tracking-widest">Measures</label>
             <div className="flex items-center gap-4">
               <button onClick={()=>setMeasures(m=>Math.max(1,m-1))} className="w-9 h-9 bg-slate-800 rounded-xl text-lg font-black hover:bg-slate-700 transition-colors">-</button>
@@ -835,7 +873,7 @@ const App = () => {
         </div>
       </div>
 
-      <ScoreDisplay notes={recordedNotes} timeSig={timeSig} measures={measures} isSessionActive={isPlaying} tempo={tempo} onDebugLog={setDebugInfo} />
+      <ScoreDisplay notes={recordedNotes} timeSig={timeSig} measures={measures} isSessionActive={isPlaying} tempo={tempo} accidentalMode={accidentalMode} onDebugLog={setDebugInfo} />
       <Telemetry notes={recordedNotes} isSessionActive={isPlaying} />
       {debugInfo && (
         <div className="w-full h-48 p-4 bg-slate-900 border border-slate-800 rounded-2xl text-[10px] font-mono text-slate-400 whitespace-pre-wrap overflow-y-auto shrink-0 mb-3 select-text cursor-text">
