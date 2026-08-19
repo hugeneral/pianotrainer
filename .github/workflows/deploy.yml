@@ -3,6 +3,7 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: ['main'] # or your default branch name
+  workflow_dispatch: # <-- Adds the manual trigger button in GitHub UI
 
 permissions:
   contents: read
