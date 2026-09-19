@@ -861,6 +861,7 @@ const App = () => {
     measureCount: 0,
     isRecording: false,
     beatTimes: [] as { audioTime: number, perfTime: number }[],
+    recordingStartPerfTime: 0,
   });
 
   const stop = useCallback(() => {
@@ -925,6 +926,7 @@ const App = () => {
     setIsPlaying(false);
     setIsIntro(false);
     state.current.isRecording = false;
+    state.current.recordingStartPerfTime = 0;
   }, [latencyMs]);
 
   const playSynth = useCallback((midi: number) => {
@@ -954,6 +956,8 @@ const App = () => {
 
   const tick = useCallback(() => {
     if (!audioCtx.current) return;
+    const outputLatencySec = (audioCtx.current.outputLatency || 0) + (audioCtx.current.baseLatency || 0);
+
     while (state.current.nextNoteTime < audioCtx.current.currentTime + 0.1) {
       // Check if we have finished all measures (measureCount starts at 0 for bar 1)
       // We add 1 to account for the mandatory intro bar.
@@ -964,25 +968,39 @@ const App = () => {
 
       const time = state.current.nextNoteTime;
       const isDown = state.current.currentBeat === 0;
+      const isFirstRecordingClick = state.current.measureCount === 1 && isDown;
       
       const osc = audioCtx.current.createOscillator();
       const gain = audioCtx.current.createGain();
-      osc.frequency.value = isDown ? 1000 : 700;
-      gain.gain.setValueAtTime(isDown ? 0.3 : 0.15, time);
-      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
-      osc.connect(gain); gain.connect(audioCtx.current.destination);
-      osc.start(time); osc.stop(time + 0.1);
+      
+      // High pitch for downbeat/first click (1600 Hz / 1760 Hz) vs secondary beats (800 Hz)
+      const freq = isFirstRecordingClick ? 1760 : isDown ? 1600 : 800;
+      const peakGain = isFirstRecordingClick ? 0.45 : isDown ? 0.38 : 0.15;
+      
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(peakGain, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.08);
+      osc.connect(gain); 
+      gain.connect(audioCtx.current.destination);
+      osc.start(time); 
+      osc.stop(time + 0.08);
 
-      const delayMs = (time - audioCtx.current.currentTime) * 1000;
+      const delayMs = (time - audioCtx.current.currentTime + outputLatencySec) * 1000;
       const perfTime = performance.now() + delayMs;
+      const thisBeatIdx = state.current.beatTimes.length;
       state.current.beatTimes.push({ audioTime: time, perfTime });
       
+      // The first click of recording occurs at beat index === timeSigRef.current.beats
+      if (thisBeatIdx === timeSigRef.current.beats) {
+        state.current.recordingStartPerfTime = perfTime;
+      }
+
       setTimeout(() => { 
         setVisualBeat(true); 
         setTimeout(() => setVisualBeat(false), 80); 
 
-        // Start recording exactly after the selected number of intro beats
-        if (state.current.beatTimes.length === timeSigRef.current.beats + 1) {
+        // Start recording exactly at the first click of recording
+        if (thisBeatIdx === timeSigRef.current.beats) {
           state.current.isRecording = true;
           setIsIntro(false);
         }
@@ -1011,10 +1029,27 @@ const App = () => {
 
     audioCtx.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     if (audioCtx.current.state === 'suspended') audioCtx.current.resume();
-    state.current = { nextNoteTime: audioCtx.current.currentTime + 0.1, currentBeat: 0, measureCount: 0, isRecording: false, beatTimes: [] };
+
+    const outputLatencySec = (audioCtx.current.outputLatency || 0) + (audioCtx.current.baseLatency || 0);
+    const startAudioTime = audioCtx.current.currentTime + 0.1;
+    const startPerfTime = performance.now() + (0.1 + outputLatencySec) * 1000;
+    const beatDurMs = (60.0 / tempo) * 1000;
+    // Exactly timeSig.beats beats of intro count-in before the recording's first click
+    const estimatedRecStartTime = startPerfTime + (timeSig.beats * beatDurMs);
+
+    state.current = { 
+      nextNoteTime: startAudioTime, 
+      currentBeat: 0, 
+      measureCount: 0, 
+      isRecording: false, 
+      beatTimes: [],
+      recordingStartPerfTime: estimatedRecStartTime
+    };
     setRecordedNotes([]);
     sessionNotesRef.current = [];
-    setIsPlaying(true); setIsIntro(true); tick();
+    setIsPlaying(true); 
+    setIsIntro(true); 
+    tick();
   };
 
   const testLatency = () => {
@@ -1070,37 +1105,40 @@ const App = () => {
       // Use state latencyMs
       const perfTime = midiSignal.timeStamp - latencyMs;
 
-      // 2. Recording Logic
-      if (state.current.isRecording && isNoteOn) {
-          let bestBeatIdx = -1;
-          let minDist = Infinity;
-          state.current.beatTimes.forEach((bt, idx) => {
-            if (idx < timeSig.beats) return; 
-            const d = Math.abs(bt.perfTime - perfTime);
-            if (d < minDist) { minDist = d; bestBeatIdx = idx - timeSig.beats; }
-          });
+      // 2. Recording Logic: Ensure notes start to be transcribed strictly at or after the first click of recording
+      if (isNoteOn) {
+          const recStartTime = state.current.recordingStartPerfTime;
+          const beatDurMs = (60.0 / tempo) * 1000;
+          const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
+          const subdivsPerBeat = subdivisionsPerWhole / timeSig.value;
+          const subdivDurMs = beatDurMs / subdivsPerBeat;
+          const measureSubdivisions = timeSig.beats * subdivsPerBeat;
 
-          if (bestBeatIdx >= 0) {
-            const beatDurMs = (60.0 / tempo) * 1000;
-            const targetBeatTime = state.current.beatTimes[bestBeatIdx + timeSig.beats].perfTime;
-            
-            // Calculate rhythm based on quantization and denominator (beat value)
-            const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
-            const subdivsPerBeat = subdivisionsPerWhole / timeSig.value;
-            const subdivDurMs = beatDurMs / subdivsPerBeat;
-            const rawOffset = perfTime - targetBeatTime;
-            const subdivIdxRaw = Math.round(rawOffset / subdivDurMs);
-            
-            let fBeatIdx = bestBeatIdx, fSubdivIdx = subdivIdxRaw;
-            
-            // Normalize grid position
-            while (fSubdivIdx >= subdivsPerBeat) { fSubdivIdx -= subdivsPerBeat; fBeatIdx++; }
-            while (fSubdivIdx < 0) { fSubdivIdx += subdivsPerBeat; fBeatIdx--; }
+          // Notes must start being transcribed ONLY at or after the first click of recording!
+          // Allow up to half a subdivision early tolerance for human anticipation of the first downbeat
+          const isEligible = isPlaying && recStartTime > 0 && perfTime >= recStartTime - (subdivDurMs / 2);
 
-            const mIdx = Math.floor(fBeatIdx / timeSig.beats);
-            const bIdx = fBeatIdx % timeSig.beats;
-            
-            activeNotes.current.set(midi, { startTime: perfTime, mIdx, bIdx, sIdx: fSubdivIdx, diffMs: rawOffset - (subdivIdxRaw * subdivDurMs) });
+          if (isEligible) {
+            const timeSinceStart = perfTime - recStartTime;
+            const totalSubdivIdx = Math.round(timeSinceStart / subdivDurMs);
+
+            if (totalSubdivIdx >= 0) {
+              const mIdx = Math.floor(totalSubdivIdx / measureSubdivisions);
+              const inMeasureSubdiv = totalSubdivIdx % measureSubdivisions;
+              const bIdx = Math.floor(inMeasureSubdiv / subdivsPerBeat);
+              const sIdx = inMeasureSubdiv % subdivsPerBeat;
+              const diffMs = timeSinceStart - (totalSubdivIdx * subdivDurMs);
+
+              if (mIdx < measures) {
+                activeNotes.current.set(midi, { 
+                  startTime: perfTime, 
+                  mIdx, 
+                  bIdx, 
+                  sIdx, 
+                  diffMs 
+                });
+              }
+            }
           }
       } 
       
@@ -1311,13 +1349,27 @@ const App = () => {
               <button onClick={()=>setMeasures(m=>Math.min(32,m+1))} className="w-8 h-8 bg-slate-800 rounded-lg text-base font-black hover:bg-slate-700 active:scale-95 transition-all text-slate-200">+</button>
             </div>
 
-            <div className="mt-3">
+            <div className="mt-3 flex flex-col items-center">
               <button 
                 onClick={testLatency} 
-                className="px-3 h-7 bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-lg text-[9px] font-black text-slate-300 uppercase tracking-wider hover:bg-slate-700 hover:text-white transition-all whitespace-nowrap shadow-sm active:scale-95"
+                className="px-3 h-7 bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-lg text-[9px] font-black text-slate-300 uppercase tracking-wider hover:bg-slate-700 hover:text-white transition-all whitespace-nowrap shadow-sm active:scale-95 cursor-pointer"
               >
                 Test Latency
               </button>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span className="text-[8px] font-mono text-slate-400 font-bold">
+                  {latencyMs === 0 ? '0ms offset' : `${latencyMs > 0 ? `+${latencyMs}` : latencyMs}ms`}
+                </span>
+                {latencyMs !== 0 && (
+                  <button 
+                    onClick={() => setLatencyMs(0)} 
+                    className="text-[7px] font-mono font-bold text-rose-400 hover:text-rose-300 underline cursor-pointer"
+                    title="Reset latency compensation to 0ms"
+                  >
+                    reset
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
