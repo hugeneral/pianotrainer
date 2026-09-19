@@ -5,32 +5,33 @@ import ReactDOM from 'react-dom/client';
  * MUSIC DATA & CONFIG
  */
 
-// Mapping for SHARPS mode (Default MIDI numbers to AlphaTex sharp notation)
-const MIDI_TO_ALPHATAB_SHARPS: Record<number, string> = {
-  // Extended Lower Range
-  12: 'c1', 13: 'c#1', 14: 'd1', 15: 'd#1', 16: 'e1', 17: 'f1', 18: 'f#1', 19: 'g1', 20: 'g#1', 21: 'a1', 22: 'a#1', 23: 'b1',
-  24: 'c2', 25: 'c#2', 26: 'd2', 27: 'd#2', 28: 'e2', 29: 'f2', 30: 'f#2', 31: 'g2', 32: 'g#2', 33: 'a2', 34: 'a#2', 35: 'b2',
-  
-  // Original Range
-  36: 'c3', 37: 'c#3', 38: 'd3', 39: 'd#3', 40: 'e3', 41: 'f3', 42: 'f#3', 43: 'g3', 44: 'g#3', 45: 'a3', 46: 'a#3', 47: 'b3',
-  48: 'c4', 49: 'c#4', 50: 'd4', 51: 'd#4', 52: 'e4', 53: 'f4', 54: 'f#4', 55: 'g4', 56: 'g#4', 57: 'a4', 58: 'a#4', 59: 'b4',
-  60: 'c5', 61: 'c#5', 62: 'd5', 63: 'd#5', 64: 'e5', 65: 'f5', 66: 'f#5', 67: 'g5', 68: 'g#5', 69: 'a5', 70: 'a#5', 71: 'b5',
-  72: 'c6', 73: 'c#6', 74: 'd6', 75: 'd#6', 76: 'e6', 77: 'f6', 78: 'f#6', 79: 'g6', 80: 'g#6', 81: 'a6', 82: 'a#6', 83: 'b6',
-  84: 'c7', 85: 'c#7', 86: 'd7', 87: 'd#7', 88: 'e7', 89: 'f7', 90: 'f#7', 91: 'g7', 92: 'g#7', 93: 'a7', 94: 'a#7', 95: 'b7'
+// Generated mapping for AlphaTex notation
+// Standard MIDI: C4 (Middle C) = 60.
+// AlphaTab's default treble clef renders AlphaTex octave 3 as Middle C (ledger line below staff).
+// Octave 4 is C in the 3rd space (C5).
+// Therefore, alphaTabOctave = Math.floor(midi / 12) - 2 places notes at their true written staff pitch.
+const SHARP_NOTE_NAMES = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'];
+const FLAT_NOTE_NAMES  = ['c', 'db', 'd', 'eb', 'e', 'f', 'gb', 'g', 'ab', 'a', 'bb', 'b'];
+
+const generateAlphaTabMap = (names: string[]): Record<number, string> => {
+  const map: Record<number, string> = {};
+  for (let midi = 12; midi <= 127; midi++) {
+    const semitone = midi % 12;
+    const alphaTabOctave = Math.floor(midi / 12) - 2;
+    map[midi] = `${names[semitone]}${alphaTabOctave}`;
+  }
+  return map;
 };
 
-// Mapping for FLATS mode (MIDI numbers to AlphaTex flat notation)
-const MIDI_TO_ALPHATAB_FLATS: Record<number, string> = {
-  // Extended Lower Range
-  12: 'c1', 13: 'db1', 14: 'd1', 15: 'eb1', 16: 'e1', 17: 'f1', 18: 'gb1', 19: 'g1', 20: 'ab1', 21: 'a1', 22: 'bb1', 23: 'b1',
-  24: 'c2', 25: 'db2', 26: 'd2', 27: 'eb2', 28: 'e2', 29: 'f2', 30: 'gb2', 31: 'g2', 32: 'ab2', 33: 'a2', 34: 'bb2', 35: 'b2',
-  
-  // Original Range
-  36: 'c3', 37: 'db3', 38: 'd3', 39: 'eb3', 40: 'e3', 41: 'f3', 42: 'gb3', 43: 'g3', 44: 'ab3', 45: 'a3', 46: 'bb3', 47: 'b3',
-  48: 'c4', 49: 'db4', 50: 'd4', 51: 'eb4', 52: 'e4', 53: 'f4', 54: 'gb4', 55: 'g4', 56: 'ab4', 57: 'a4', 58: 'bb4', 59: 'b4',
-  60: 'c5', 61: 'db5', 62: 'd5', 63: 'eb5', 64: 'e5', 65: 'f5', 66: 'gb5', 67: 'g5', 68: 'ab5', 69: 'a5', 70: 'bb5', 71: 'b5',
-  72: 'c6', 73: 'db6', 74: 'd6', 75: 'eb6', 76: 'e6', 77: 'f6', 78: 'gb6', 79: 'g6', 80: 'ab6', 81: 'a6', 82: 'bb6', 83: 'b6',
-  84: 'c7', 85: 'db7', 86: 'd7', 87: 'eb7', 88: 'e7', 89: 'f7', 90: 'gb7', 91: 'g7', 92: 'ab7', 93: 'a7', 94: 'bb7', 95: 'b7'
+const MIDI_TO_ALPHATAB_SHARPS: Record<number, string> = generateAlphaTabMap(SHARP_NOTE_NAMES);
+const MIDI_TO_ALPHATAB_FLATS: Record<number, string> = generateAlphaTabMap(FLAT_NOTE_NAMES);
+
+export type QuantizationValue = '1/8' | '1/16' | '1/32' | '1/64';
+export const QUANTIZATION_DIVISIONS: Record<QuantizationValue, number> = {
+  '1/8': 8,
+  '1/16': 16,
+  '1/32': 32,
+  '1/64': 64
 };
 
 export interface KeySigDef {
@@ -70,13 +71,10 @@ const loadSavedConfig = () => {
   return null;
 };
 
+// Computer keyboard map (Middle C = 60)
 const KBD_MAP: Record<string, number> = {
-  'a': 48, 's': 50, 'd': 52, 'f': 53, 'g': 55, 'h': 57, 'j': 59, 'k': 60, 'l': 62, ';': 64,
-  'q': 60, 'w': 62, 'e': 64, 'r': 65, 't': 67, 'y': 69, 'u': 71, 'i': 72, 'o': 74, 'p': 76
-};
-
-const DURATION_MAP: Record<number, string> = {
-  1: '16', 2: '8', 4: '4', 8: '2', 16: '1'
+  'a': 60, 'w': 61, 's': 62, 'e': 63, 'd': 64, 'f': 65, 't': 66, 'g': 67, 'y': 68, 'h': 69, 'u': 70, 'j': 71, 'k': 72, 'l': 74, ';': 76,
+  'q': 72, '2': 73, '3': 75, 'r': 77, '5': 78, '6': 80, '7': 82, 'i': 84, 'o': 86, 'p': 88
 };
 
 const DEFAULT_PERFECT_WINDOW_MS = 35; // Default window in ms (middle value on sensitivity slider)
@@ -100,8 +98,8 @@ export const parseNoteNameToMidi = (noteStr: string): number | null => {
   if (accidental === '#' || accidental === '♯') semitone += 1;
   else if (accidental === 'b' || accidental === '♭') semitone -= 1;
   
-  // In our score notation system, C4 (Middle C) = 48
-  const midi = (octave * 12) + semitone;
+  // Standard MIDI: C4 (Middle C) = 60. Octave 4: (4 + 1) * 12 + 0 = 60.
+  const midi = (octave + 1) * 12 + semitone;
   if (midi < 0 || midi > 127) return null;
   return midi;
 };
@@ -204,11 +202,11 @@ interface RecordedNote {
   diffMs: number;
   measure: number;
   beatIndex: number;
-  sixteenthIndex: number;
-  durationSixteenths: number; 
+  subdivIndex: number;
+  durationSubdivs: number; 
 }
 
-const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, keySignature, accidentalMode, toleranceMs, onDebugLog }: { notes: RecordedNote[], timeSig: {beats: number, value: number}, measures: number, isSessionActive: boolean, tempo: number, keySignature: string, accidentalMode: 'flats' | 'sharps', toleranceMs: number, onDebugLog?: React.Dispatch<React.SetStateAction<string>> }) => {
+const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, keySignature, accidentalMode, toleranceMs, quantization, onDebugLog }: { notes: RecordedNote[], timeSig: {beats: number, value: number}, measures: number, isSessionActive: boolean, tempo: number, keySignature: string, accidentalMode: 'flats' | 'sharps', toleranceMs: number, quantization: QuantizationValue, onDebugLog?: React.Dispatch<React.SetStateAction<string>> }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -244,51 +242,73 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, keySig
     tex += `\\tempo ${tempo}\r\n`;
     tex += `\\ts ${timeSig.beats} ${timeSig.value} \\clef treble \\ks ${keySignature} `; 
 
-    const sixteenthsPerBeat = 16 / timeSig.value;
-    const measureSixteenths = timeSig.beats * sixteenthsPerBeat;
-    const totalSixteenths = measures * measureSixteenths;
+    const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantization] || 16;
+    const subdivsPerBeat = subdivisionsPerWhole / timeSig.value;
+    const measureSubdivisions = timeSig.beats * subdivsPerBeat;
+    const totalSubdivisions = measures * measureSubdivisions;
     const texMetadata: any[] = [];
 
+    // Allowed durations in units of subdivisions
+    const allowedRhythms: { units: number; label: string }[] = [];
+    const standardDivisions = [
+      { div: 1, label: '1' },
+      { div: 2, label: '2' },
+      { div: 4, label: '4' },
+      { div: 8, label: '8' },
+      { div: 16, label: '16' },
+      { div: 32, label: '32' },
+      { div: 64, label: '64' },
+    ];
+    for (const sd of standardDivisions) {
+      if (subdivisionsPerWhole >= sd.div) {
+        const units = Math.round(subdivisionsPerWhole / sd.div);
+        if (units >= 1) {
+          allowedRhythms.push({ units, label: sd.label });
+        }
+      }
+    }
+    allowedRhythms.sort((a, b) => b.units - a.units);
+
     // 1. Sort notes by time for linear processing
-    const getNotePos = (n: RecordedNote) => (n.measure * measureSixteenths) + (n.beatIndex * sixteenthsPerBeat) + n.sixteenthIndex;
+    const getNotePos = (n: RecordedNote) => (n.measure * measureSubdivisions) + (n.beatIndex * subdivsPerBeat) + n.subdivIndex;
     const sortedNotes = [...recordedNotes].sort((a, b) => getNotePos(a) - getNotePos(b));
 
-    let currentSixteenth = 0;
+    let currentSubdiv = 0;
     
     // 2. Linear scan of the entire timeline
-    while (currentSixteenth < totalSixteenths) {
-      const inMeasureIdx = currentSixteenth % measureSixteenths;
-      const remainingInMeasure = measureSixteenths - inMeasureIdx;
+    while (currentSubdiv < totalSubdivisions) {
+      const inMeasureIdx = currentSubdiv % measureSubdivisions;
+      const remainingInMeasure = measureSubdivisions - inMeasureIdx;
       
       // Check for note(s) starting exactly at this slot
-      const startsAtSlot = sortedNotes.filter(n => Math.abs(getNotePos(n) - currentSixteenth) < 0.1);
+      const startsAtSlot = sortedNotes.filter(n => Math.abs(getNotePos(n) - currentSubdiv) < 0.1);
 
       if (startsAtSlot.length > 0) {
         // --- NOTE DETECTED ---
-        const rawDur = Math.max(...startsAtSlot.map(n => n.durationSixteenths));
+        const rawDur = Math.max(...startsAtSlot.map(n => n.durationSubdivs));
         
         // We ensure we don't cross bar lines (remainingInMeasure)
         const maxDur = Math.min(rawDur, remainingInMeasure); 
 
         // Snap to largest standard duration
         let writeDur = 1;
-        const allowed = [16, 8, 4, 2, 1];
-        for (const d of allowed) {
-            if (d <= maxDur) {
-                writeDur = d;
-                break;
-            }
+        let rhythm = allowedRhythms[allowedRhythms.length - 1].label;
+        for (const ar of allowedRhythms) {
+          if (ar.units <= maxDur) {
+            writeDur = ar.units;
+            rhythm = ar.label;
+            break;
+          }
         }
         
         // Render Note
-        const rhythm = DURATION_MAP[writeDur] || '16';
         if (startsAtSlot.length === 1) {
-          const noteName = noteMap[startsAtSlot[0].midi] || 'c4';
+          const noteName = noteMap[startsAtSlot[0].midi] || 'c3';
           tex += `${noteName}.${rhythm} `;
         } else {
           tex += "(";
           startsAtSlot.forEach((h, idx) => {
-            const noteName = noteMap[h.midi] || 'c4';
+            const noteName = noteMap[h.midi] || 'c3';
             tex += `${noteName}${idx === startsAtSlot.length - 1 ? '' : ' '}`;
           });
           tex += ").";
@@ -296,38 +316,38 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, keySig
         }
         
         texMetadata.push({ hits: startsAtSlot });
-        currentSixteenth += writeDur;
+        currentSubdiv += writeDur;
 
       } else {
         // --- NO NOTE (REST NEEDED) ---
         // Calculate gap size until next note or end of measure
-        const nextNote = sortedNotes.find(n => getNotePos(n) > currentSixteenth + 0.1);
-        const available = Math.min(nextNote ? getNotePos(nextNote) - currentSixteenth : totalSixteenths - currentSixteenth, remainingInMeasure);
+        const nextNote = sortedNotes.find(n => getNotePos(n) > currentSubdiv + 0.1);
+        const available = Math.min(nextNote ? getNotePos(nextNote) - currentSubdiv : totalSubdivisions - currentSubdiv, remainingInMeasure);
 
         // Find largest rest that fits
         let writeDur = 1;
-        const allowed = [16, 8, 4, 2, 1];
-        for (const d of allowed) {
-            if (d <= available) {
-                writeDur = d;
-                break;
-            }
+        let rhythm = allowedRhythms[allowedRhythms.length - 1].label;
+        for (const ar of allowedRhythms) {
+          if (ar.units <= available) {
+            writeDur = ar.units;
+            rhythm = ar.label;
+            break;
+          }
         }
 
-        const rhythm = DURATION_MAP[writeDur] || '16';
         tex += `r.${rhythm} `;
         texMetadata.push({ hits: null });
-        currentSixteenth += writeDur;
+        currentSubdiv += writeDur;
       }
 
       // Add bar lines
-      if (currentSixteenth > 0 && currentSixteenth % measureSixteenths === 0) {
+      if (currentSubdiv > 0 && currentSubdiv % measureSubdivisions === 0) {
         tex += "| ";
       }
     }
 
     return { tex, texMetadata };
-  }, [timeSig.beats, timeSig.value, measures, tempo, keySignature, accidentalMode]);
+  }, [timeSig.beats, timeSig.value, measures, tempo, keySignature, accidentalMode, quantization]);
 
   useLayoutEffect(() => {
     if (!containerRef.current || apiRef.current) return;
@@ -577,7 +597,7 @@ const Telemetry = ({ notes, isSessionActive, toleranceMs }: { notes: RecordedNot
                     <div className="w-12 h-6 flex items-center justify-center bg-slate-800 rounded-md text-slate-500 font-bold border border-slate-700 text-[9px]">MIDI {n.midi}</div>
                     <span className={`font-black tracking-wider w-32 ${Math.abs(n.diffMs) < toleranceMs ? 'text-slate-500' : n.diffMs < 0 ? 'text-blue-400' : 'text-rose-500'}`}>{getTimingLabel(n.diffMs, toleranceMs)}</span>
                  </div>
-                 <span className="text-[9px] text-slate-600 font-black uppercase">Bar {n.measure+1} • Pos {n.beatIndex+1}.{n.sixteenthIndex+1}</span>
+                 <span className="text-[9px] text-slate-600 font-black uppercase">Bar {n.measure+1} • Pos {n.beatIndex+1}.{n.subdivIndex+1}</span>
               </div>
             ))
           )}
@@ -715,7 +735,7 @@ const InstructionsModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () =
               <li>Click the <strong className="text-slate-200">"Test Latency"</strong> button on the control bar.</li>
               <li>The tempo automatically locks to <strong className="text-slate-200">100 BPM</strong> with a 1-measure count-in.</li>
               <li>Tap any piano key in exact synchronization with the metronome clicks.</li>
-              <li>The calculation happens automatically after the set measures, saving your hardware delay offset (ms) and restoring your previous tempo.</li>
+              <li>The calculation happens automatically after the set measures, saving your hardware delay offset (ms) and restoring your previous tempo, time meter, and measures.</li>
               <li><strong className="text-slate-200">Accuracy Slider</strong>: Located directly under the Tempo control to adjust your difficulty threshold (default <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">±35ms</code>, or down to <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">±5ms</code> for strict precision).</li>
             </ol>
           </section>
@@ -727,7 +747,7 @@ const InstructionsModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () =
               <h3 className="text-xs font-black uppercase tracking-wider text-slate-200">5. How to Practice & Read Feedback</h3>
             </div>
             <ul className="text-slate-400 pl-4 space-y-2">
-              <li><strong className="text-slate-200">Set Configuration</strong>: Pick your desired <strong>Tempo</strong>, <strong>Time Meter</strong>, <strong>Key Signature</strong>, <strong>Measures</strong>, and <strong>Min Note cutoff</strong> (defaults to C4 to ignore left-hand notes below Middle C). All settings save automatically.</li>
+              <li><strong className="text-slate-200">Set Configuration</strong>: Pick your desired <strong>Tempo</strong>, <strong>Time Meter</strong>, <strong>Key Signature</strong>, <strong>Measures</strong>, <strong>Min Note cutoff</strong> (defaults to C4 to ignore left-hand notes below Middle C), and <strong>Quantization</strong> grid (<code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">1/8</code>, <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">1/16</code>, <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">1/32</code>, <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">1/64</code>). All settings save automatically.</li>
               <li><strong className="text-slate-200">Record</strong>: Press the large <strong className="text-slate-200">RECORD</strong> button. Listen to the 1-bar intro count-in, then play your musical phrase.</li>
               <li><strong className="text-slate-200">Review Score Notation</strong>: Press <strong className="text-slate-200">STOP</strong> (or complete all measures). Your performance is transcribed directly onto the musical score with color-coded feedback:
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 font-mono text-[11px]">
@@ -779,6 +799,13 @@ const App = () => {
   });
   const [toleranceMs, setToleranceMs] = useState<number>(savedConfig?.toleranceMs ?? 35);
   const [minNote, setMinNote] = useState<string>(savedConfig?.minNote ?? 'C4');
+  const [quantization, setQuantization] = useState<QuantizationValue>(() => {
+    const saved = savedConfig?.quantization;
+    if (saved && (saved === '1/8' || saved === '1/16' || saved === '1/32' || saved === '1/64')) {
+      return saved;
+    }
+    return '1/16';
+  });
   const [validationError, setValidationError] = useState<string | null>(null);
   const [showInstructions, setShowInstructions] = useState(false);
 
@@ -789,8 +816,13 @@ const App = () => {
   const [activeInput, setActiveInput] = useState(false);
   const [debugInfo, setDebugInfo] = useState<string>('');
 
+  interface SavedLatencyConfig {
+    tempo: number;
+    timeSig: { beats: number; value: number };
+    measures: number;
+  }
   const isLatencyTesting = useRef(false);
-  const savedTempoForLatencyTest = useRef<number | null>(null);
+  const savedConfigForLatencyTest = useRef<SavedLatencyConfig | null>(null);
   const sessionNotesRef = useRef<RecordedNote[]>([]); // Track all notes for calculation
 
   const currentKeyDef = KEY_SIGNATURES.find(k => k.code === keySignature) || KEY_SIGNATURES[0];
@@ -805,21 +837,23 @@ const App = () => {
   const timeSigRef = useRef(timeSig);
   const measuresRef = useRef(measures);
   const minNoteRef = useRef(minNote);
+  const quantizationRef = useRef(quantization);
   useEffect(() => { tempoRef.current = tempo; }, [tempo]);
   useEffect(() => { timeSigRef.current = timeSig; }, [timeSig]);
   useEffect(() => { measuresRef.current = measures; }, [measures]);
   useEffect(() => { minNoteRef.current = minNote; }, [minNote]);
+  useEffect(() => { quantizationRef.current = quantization; }, [quantization]);
 
   // Save config to localStorage whenever user changes settings
   useEffect(() => {
     if (isLatencyTesting.current) return;
     try {
-      const configToSave = { tempo, timeSig, measures, latencyMs, keySignature, toleranceMs, minNote };
+      const configToSave = { tempo, timeSig, measures, latencyMs, keySignature, toleranceMs, minNote, quantization };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(configToSave));
     } catch (e) {
       console.warn("Failed to save config to localStorage", e);
     }
-  }, [tempo, timeSig, measures, latencyMs, keySignature, toleranceMs, minNote]);
+  }, [tempo, timeSig, measures, latencyMs, keySignature, toleranceMs, minNote, quantization]);
 
   const state = useRef({
     nextNoteTime: 0,
@@ -836,24 +870,25 @@ const App = () => {
     const now = performance.now();
     const flushedNotes: RecordedNote[] = [];
     const beatDurMs = (60.0 / tempoRef.current) * 1000;
-    const sixteenthsPerBeat = 16 / timeSigRef.current.value;
-    const sixteenthDurMs = beatDurMs / sixteenthsPerBeat;
+    const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
+    const subdivsPerBeat = subdivisionsPerWhole / timeSigRef.current.value;
+    const subdivDurMs = beatDurMs / subdivsPerBeat;
 
     activeNotes.current.forEach((startData, midi) => {
       // Force end time to now
       const endTime = now - latencyMs;
       const durMs = endTime - startData.startTime;
-      const durationSixteenths = Math.max(1, Math.round(durMs / sixteenthDurMs));
+      const durationSubdivs = Math.max(1, Math.round(durMs / subdivDurMs));
       
       if (startData.mIdx >= 0 && startData.mIdx < measuresRef.current) {
-         const newNote = {
+         const newNote: RecordedNote = {
             id: Math.random().toString(36).substr(2, 9),
             midi,
             diffMs: startData.diffMs,
             measure: startData.mIdx,
             beatIndex: startData.bIdx,
-            sixteenthIndex: startData.sIdx,
-            durationSixteenths
+            subdivIndex: startData.sIdx,
+            durationSubdivs
          };
          flushedNotes.push(newNote);
          sessionNotesRef.current.push(newNote);
@@ -867,27 +902,30 @@ const App = () => {
     activeNotes.current.clear();
 
     if (isLatencyTesting.current) {
+       const saved = savedConfigForLatencyTest.current;
        if (sessionNotesRef.current.length > 0) {
            const sum = sessionNotesRef.current.reduce((acc, n) => acc + n.diffMs, 0);
            const avg = sum / sessionNotesRef.current.length;
            const newLatency = Math.round(avg);
            setLatencyMs(newLatency);
-           setDebugInfo(`[Calibration] Latency Test Complete.\nDetected Avg Offset: ${avg.toFixed(2)}ms\nNew Latency Compensation: ${newLatency}ms\nRestored original tempo: ${savedTempoForLatencyTest.current ?? tempo} BPM\n`);
+           setDebugInfo(`[Calibration] Latency Test Complete.\nDetected Avg Offset: ${avg.toFixed(2)}ms\nNew Latency Compensation: ${newLatency}ms\nRestored previous settings: ${saved ? `${saved.tempo} BPM, ${saved.timeSig.beats}/${saved.timeSig.value}, ${saved.measures} bars` : ''}\n`);
        } else {
-           setDebugInfo(`[Calibration] Failed: No notes detected.\nRestored original tempo: ${savedTempoForLatencyTest.current ?? tempo} BPM\n`);
+           setDebugInfo(`[Calibration] Failed: No notes detected.\nRestored previous settings: ${saved ? `${saved.tempo} BPM, ${saved.timeSig.beats}/${saved.timeSig.value}, ${saved.measures} bars` : ''}\n`);
        }
        isLatencyTesting.current = false;
-       // Restore saved tempo from before latency test
-       if (savedTempoForLatencyTest.current !== null) {
-         setTempo(savedTempoForLatencyTest.current);
-         savedTempoForLatencyTest.current = null;
+       // Restore saved tempo, time meter, and measures from before latency test
+       if (saved) {
+         setTempo(saved.tempo);
+         setTimeSig(saved.timeSig);
+         setMeasures(saved.measures);
+         savedConfigForLatencyTest.current = null;
        }
     }
 
     setIsPlaying(false);
     setIsIntro(false);
     state.current.isRecording = false;
-  }, [latencyMs, tempo]);
+  }, [latencyMs]);
 
   const playSynth = useCallback((midi: number) => {
     if (!audioCtx.current) audioCtx.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -981,14 +1019,18 @@ const App = () => {
 
   const testLatency = () => {
     if (isPlaying) stop();
-    // Save current tempo before starting test at standard 100 BPM
-    savedTempoForLatencyTest.current = tempo;
+    // Save current tempo, time meter, and measures before starting test at standard 100 BPM
+    savedConfigForLatencyTest.current = {
+      tempo,
+      timeSig: { ...timeSig },
+      measures
+    };
     setTempo(100);
     setMeasures(4);
     setTimeSig({ beats: 4, value: 4 });
     setLatencyMs(0); 
     isLatencyTesting.current = true;
-    setDebugInfo(`[Calibration] Starting Latency Test at 100 BPM...\n(Original tempo ${tempo} BPM saved; will restore after test)\nPlease tap/play exactly on the metronome click for 4 bars.`);
+    setDebugInfo(`[Calibration] Starting Latency Test at 100 BPM (4/4, 4 bars)...\n(Original settings saved: ${tempo} BPM, ${timeSig.beats}/${timeSig.value}, ${measures} bars; will restore after test)\nPlease tap/play exactly on the metronome click for 4 bars.`);
     
     // Defer start slightly to allow state updates to settle if any refs depend on them immediately
     setTimeout(() => onStart(), 100);
@@ -998,9 +1040,8 @@ const App = () => {
     if (midiSignal) {
       const [statusByte, rawMidi, vel] = midiSignal.data;
       
-      // Real MIDI devices send Middle C as 60. In our AlphaTex table, C4 is 48.
-      // rawMidi - 12 maps Middle C (60) to 48 (C4).
-      const midi = midiSignal.source === 'midi' ? rawMidi - 12 : rawMidi;
+      // Standard MIDI numbers: Middle C (C4) is 60.
+      const midi = rawMidi;
 
       // Filter out notes below minNote cutoff if valid (makes them completely transparent to the app)
       const cutoffMidi = parseNoteNameToMidi(minNoteRef.current);
@@ -1043,22 +1084,23 @@ const App = () => {
             const beatDurMs = (60.0 / tempo) * 1000;
             const targetBeatTime = state.current.beatTimes[bestBeatIdx + timeSig.beats].perfTime;
             
-            // Calculate rhythm based on denominator (beat value)
-            const sixteenthsPerBeat = 16 / timeSig.value;
-            const sixteenthDurMs = beatDurMs / sixteenthsPerBeat;
+            // Calculate rhythm based on quantization and denominator (beat value)
+            const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
+            const subdivsPerBeat = subdivisionsPerWhole / timeSig.value;
+            const subdivDurMs = beatDurMs / subdivsPerBeat;
             const rawOffset = perfTime - targetBeatTime;
-            const sixteenIdxRaw = Math.round(rawOffset / sixteenthDurMs);
+            const subdivIdxRaw = Math.round(rawOffset / subdivDurMs);
             
-            let fBeatIdx = bestBeatIdx, fSixteenIdx = sixteenIdxRaw;
+            let fBeatIdx = bestBeatIdx, fSubdivIdx = subdivIdxRaw;
             
             // Normalize grid position
-            while (fSixteenIdx >= sixteenthsPerBeat) { fSixteenIdx -= sixteenthsPerBeat; fBeatIdx++; }
-            while (fSixteenIdx < 0) { fSixteenIdx += sixteenthsPerBeat; fBeatIdx--; }
+            while (fSubdivIdx >= subdivsPerBeat) { fSubdivIdx -= subdivsPerBeat; fBeatIdx++; }
+            while (fSubdivIdx < 0) { fSubdivIdx += subdivsPerBeat; fBeatIdx--; }
 
             const mIdx = Math.floor(fBeatIdx / timeSig.beats);
             const bIdx = fBeatIdx % timeSig.beats;
             
-            activeNotes.current.set(midi, { startTime: perfTime, mIdx, bIdx, sIdx: fSixteenIdx, diffMs: rawOffset - (sixteenIdxRaw * sixteenthDurMs) });
+            activeNotes.current.set(midi, { startTime: perfTime, mIdx, bIdx, sIdx: fSubdivIdx, diffMs: rawOffset - (subdivIdxRaw * subdivDurMs) });
           }
       } 
       
@@ -1068,16 +1110,17 @@ const App = () => {
           if (startData) {
             const endTime = perfTime; 
             const beatDurMs = (60.0 / tempo) * 1000;
-            const sixteenthsPerBeat = 16 / timeSig.value;
-            const sixteenthDurMs = beatDurMs / sixteenthsPerBeat;
+            const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
+            const subdivsPerBeat = subdivisionsPerWhole / timeSig.value;
+            const subdivDurMs = beatDurMs / subdivsPerBeat;
             const durMs = endTime - startData.startTime;
             
-            const durationSixteenths = Math.max(1, Math.round(durMs / sixteenthDurMs));
+            const durationSubdivs = Math.max(1, Math.round(durMs / subdivDurMs));
             
             if (startData.mIdx >= 0 && startData.mIdx < measures) {
-              const newNote = {
+              const newNote: RecordedNote = {
                 id: Math.random().toString(36).substr(2, 9),
-                midi, diffMs: startData.diffMs, measure: startData.mIdx, beatIndex: startData.bIdx, sixteenthIndex: startData.sIdx, durationSixteenths
+                midi, diffMs: startData.diffMs, measure: startData.mIdx, beatIndex: startData.bIdx, subdivIndex: startData.sIdx, durationSubdivs
               };
               // Only add to visual staff if NOT testing latency
               if (!isLatencyTesting.current) {
@@ -1091,7 +1134,7 @@ const App = () => {
 
       return () => clearTimeout(timer);
     }
-  }, [midiSignal, timeSig.beats, timeSig.value, measures, tempo, playSynth, isConnected, latencyMs, minNote]);
+  }, [midiSignal, timeSig.beats, timeSig.value, measures, tempo, playSynth, isConnected, latencyMs, minNote, quantization]);
 
   return (
     <div className="max-w-6xl mx-auto h-full p-6 flex flex-col gap-6 overflow-y-auto bg-black text-slate-100">
@@ -1224,7 +1267,7 @@ const App = () => {
             </div>
           </div>
 
-          {/* Column 3: Key Signature */}
+          {/* Column 3: Key Signature & Quantization (to the right of Min Note) */}
           <div className="flex flex-col items-center">
              <label className="text-[9px] font-black text-slate-600 uppercase block mb-1.5 tracking-widest">Key Sig</label>
              <select
@@ -1238,6 +1281,25 @@ const App = () => {
                   </option>
                 ))}
              </select>
+
+            {/* Quantization Dropdown directly to the right of Min Note */}
+            <div className="mt-3 flex flex-col items-center w-full">
+              <div className="flex justify-between items-center w-full px-0.5 mb-1">
+                <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest" title="Quantization grid division">Quantization</label>
+                <span className="text-[8px] font-mono font-bold text-slate-400">{quantization}</span>
+              </div>
+              <select 
+                value={quantization}
+                onChange={(e) => setQuantization(e.target.value as QuantizationValue)}
+                className="h-7 w-20 px-2 bg-slate-800 rounded-lg text-xs font-mono font-bold text-center outline-none border border-slate-700 focus:border-slate-500 text-slate-100 cursor-pointer transition-colors"
+                title="Quantization grid resolution (1/8, 1/16, 1/32, 1/64)"
+              >
+                <option value="1/8" className="bg-slate-900 text-slate-100 font-sans">1/8</option>
+                <option value="1/16" className="bg-slate-900 text-slate-100 font-sans">1/16</option>
+                <option value="1/32" className="bg-slate-900 text-slate-100 font-sans">1/32</option>
+                <option value="1/64" className="bg-slate-900 text-slate-100 font-sans">1/64</option>
+              </select>
+            </div>
           </div>
 
           {/* Column 4: Measures & Test Latency */}
@@ -1261,7 +1323,7 @@ const App = () => {
         </div>
       </div>
 
-      <ScoreDisplay notes={recordedNotes} timeSig={timeSig} measures={measures} isSessionActive={isPlaying} tempo={tempo} keySignature={keySignature} accidentalMode={accidentalMode} toleranceMs={toleranceMs} onDebugLog={setDebugInfo} />
+      <ScoreDisplay notes={recordedNotes} timeSig={timeSig} measures={measures} isSessionActive={isPlaying} tempo={tempo} keySignature={keySignature} accidentalMode={accidentalMode} toleranceMs={toleranceMs} quantization={quantization} onDebugLog={setDebugInfo} />
       <Telemetry notes={recordedNotes} isSessionActive={isPlaying} toleranceMs={toleranceMs} />
       <DebugPanel debugInfo={debugInfo} />
       <InstructionsModal isOpen={showInstructions} onClose={() => setShowInstructions(false)} />
