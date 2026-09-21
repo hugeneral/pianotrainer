@@ -105,13 +105,13 @@ export const parseNoteNameToMidi = (noteStr: string): number | null => {
 };
 
 const getTimingColorHex = (diffMs: number, toleranceMs: number = DEFAULT_PERFECT_WINDOW_MS): string => {
-  if (Math.abs(diffMs) < toleranceMs) return '#64748b'; // Slate (Perfect)
+  if (Math.abs(diffMs) <= toleranceMs) return '#64748b'; // Slate (Perfect)
   if (diffMs < 0) return '#3b82f6'; // Blue (Early)
   return '#f43f5e'; // Rose (Late)
 };
 
 const getTimingLabel = (diffMs: number, toleranceMs: number = DEFAULT_PERFECT_WINDOW_MS): string => {
-  if (Math.abs(diffMs) < toleranceMs) return 'PERFECT';
+  if (Math.abs(diffMs) <= toleranceMs) return 'PERFECT';
   return diffMs < 0 ? `${Math.abs(Math.round(diffMs))}ms EARLY` : `${Math.round(diffMs)}ms LATE`;
 };
 
@@ -456,7 +456,7 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, keySig
                             }
 
                             coloredCount++;
-                            const status = Math.abs(diffMs) < currentTolerance ? 'PERFECT' : diffMs < 0 ? 'EARLY' : 'LATE';
+                            const status = Math.abs(diffMs) <= currentTolerance ? 'PERFECT' : diffMs < 0 ? 'EARLY' : 'LATE';
                             colorDebugLog += `Note #${globalIndex} (Bar ${bar.index !== undefined ? bar.index + 1 : '?'}) [${diffMs > 0 ? '+' : ''}${Math.round(diffMs)}ms] [${status} (±${currentTolerance}ms)] -> ${colorHex}\n`;
                           } catch (err) {
                             console.error(`[Error] Color application failed: ${err}`);
@@ -612,7 +612,7 @@ const Telemetry = ({ notes, isSessionActive, toleranceMs }: { notes: RecordedNot
               <div key={n.id} className="flex items-center justify-between bg-slate-900/60 p-3 rounded-xl border border-slate-800/60 transition-all hover:bg-slate-800/40 animate-in fade-in slide-in-from-right-2">
                  <div className="flex items-center gap-6">
                     <div className="w-12 h-6 flex items-center justify-center bg-slate-800 rounded-md text-slate-500 font-bold border border-slate-700 text-[9px]">MIDI {n.midi}</div>
-                    <span className={`font-black tracking-wider w-32 ${Math.abs(n.diffMs) < toleranceMs ? 'text-slate-500' : n.diffMs < 0 ? 'text-blue-400' : 'text-rose-500'}`}>{getTimingLabel(n.diffMs, toleranceMs)}</span>
+                    <span className={`font-black tracking-wider w-32 ${Math.abs(n.diffMs) <= toleranceMs ? 'text-slate-400 font-bold' : n.diffMs < 0 ? 'text-blue-400' : 'text-rose-500'}`}>{getTimingLabel(n.diffMs, toleranceMs)}</span>
                  </div>
                  <span className="text-[9px] text-slate-600 font-black uppercase">Bar {n.measure+1} • Pos {n.beatIndex+1}.{n.subdivIndex+1}</span>
               </div>
@@ -750,7 +750,7 @@ const InstructionsModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () =
             </p>
             <ol className="list-decimal list-inside text-slate-400 pl-4 space-y-1.5">
               <li>Click the <strong className="text-slate-200">"Test Latency"</strong> button on the control bar.</li>
-              <li>The test runs directly at your <strong className="text-slate-200">current tempo</strong> with a 1-measure count-in.</li>
+              <li>The test temporarily sets the meter to 4/4 and 4 bars at your <strong className="text-slate-200">current tempo</strong> with a 1-measure count-in, automatically restoring your meter and bars when finished.</li>
               <li>Tap any piano key in exact synchronization with the metronome clicks.</li>
               <li>The offset is calculated against the metronome beat clicks and applied as your latency compensation.</li>
               <li>You can also fine-tune the latency offset manually using the <strong className="text-slate-200">+</strong> and <strong className="text-slate-200">-</strong> buttons under Test Latency.</li>
@@ -836,6 +836,7 @@ const App = () => {
 
   const isLatencyTesting = useRef(false);
   const latencyTestOffsets = useRef<number[]>([]);
+  const latencyPreTestConfig = useRef<{ timeSig: { beats: number; value: number }; measures: number } | null>(null);
   const sessionNotesRef = useRef<RecordedNote[]>([]); // Track all notes for calculation
 
   const currentKeyDef = KEY_SIGNATURES.find(k => k.code === keySignature) || KEY_SIGNATURES[0];
@@ -845,7 +846,7 @@ const App = () => {
   const metTimer = useRef<any>(null);
   const activeNotes = useRef<Map<number, any>>(new Map());
   const activeInputTimer = useRef<any>(null);
-  const lastNoteOnsetRef = useRef<{ perfTime: number; lastPerfTime: number; totalSubdivIdx: number } | null>(null);
+  const lastNoteOnsetRef = useRef<{ midi: number; perfTime: number; totalSubdivIdx: number } | null>(null);
 
   const tempoRef = useRef(tempo);
   const timeSigRef = useRef(timeSig);
@@ -925,6 +926,7 @@ const App = () => {
 
     if (isLatencyTesting.current) {
        const offsets = latencyTestOffsets.current;
+       const preConfig = latencyPreTestConfig.current;
        if (offsets.length > 0) {
            // If we have at least 4 taps, discard the min and max extremes for a cleaner trimmed average
            let validOffsets = [...offsets];
@@ -934,15 +936,24 @@ const App = () => {
            }
            const sum = validOffsets.reduce((acc, o) => acc + o, 0);
            const avg = sum / validOffsets.length;
-           const newLatency = Math.round(avg);
+           const newLatency = -Math.round(avg);
            setLatencyMs(newLatency);
            latencyMsRef.current = newLatency;
-           setDebugInfo(`[Calibration] Latency Test Complete at ${tempoRef.current} BPM.\nCollected ${offsets.length} taps (Avg offset: ${avg >= 0 ? `+${avg.toFixed(1)}` : avg.toFixed(1)}ms).\nSet Latency Compensation to: ${newLatency >= 0 ? `+${newLatency}` : newLatency}ms.`);
+           setDebugInfo(`[Calibration Complete] Latency Test at ${tempoRef.current} BPM.\nCollected ${offsets.length} taps (Avg tap offset: ${avg >= 0 ? `+${avg.toFixed(1)}` : avg.toFixed(1)}ms).\nSet Timing Offset to: ${newLatency >= 0 ? `+${newLatency}` : newLatency}ms.${preConfig ? `\nRestored meter (${preConfig.timeSig.beats}/${preConfig.timeSig.value}) and measures (${preConfig.measures} bars).` : ''}`);
        } else {
-           setDebugInfo(`[Calibration] No taps detected during latency test at ${tempoRef.current} BPM.\nLatency remains: ${latencyMsRef.current}ms.`);
+           setDebugInfo(`[Calibration] No taps detected during latency test at ${tempoRef.current} BPM.\nTiming offset remains: ${latencyMsRef.current >= 0 ? `+${latencyMsRef.current}` : latencyMsRef.current}ms.${preConfig ? `\nRestored meter (${preConfig.timeSig.beats}/${preConfig.timeSig.value}) and measures (${preConfig.measures} bars).` : ''}`);
        }
        isLatencyTesting.current = false;
        latencyTestOffsets.current = [];
+
+       // Restore pre-test meter and measures at the end of the latency test
+       if (preConfig) {
+         setTimeSig(preConfig.timeSig);
+         timeSigRef.current = preConfig.timeSig;
+         setMeasures(preConfig.measures);
+         measuresRef.current = preConfig.measures;
+         latencyPreTestConfig.current = null;
+       }
     }
 
     setIsPlaying(false);
@@ -1003,8 +1014,8 @@ const App = () => {
       playSynth(midi);
     }
 
-    // Latency compensation: Adjust input time by calibrated offset
-    const perfTime = timeStamp - latencyMsRef.current;
+    // Timing compensation: Positive offset nudges notes forward (later, +ms); negative nudges backward (earlier, -ms)
+    const perfTime = timeStamp + latencyMsRef.current;
 
     // Latency test mode: measure user taps directly against the nearest metronome beat click
     if (isLatencyTesting.current) {
@@ -1012,8 +1023,8 @@ const App = () => {
         const recStartTime = state.current.recordingStartPerfTime;
         const beatUnitFactor = 4 / timeSigRef.current.value;
         const beatDurMs = (60.0 / tempoRef.current) * beatUnitFactor * 1000;
-        if (recStartTime > 0 && perfTime >= recStartTime - (beatDurMs / 2)) {
-          const timeSinceStart = perfTime - recStartTime;
+        if (recStartTime > 0 && timeStamp >= recStartTime - (beatDurMs / 2)) {
+          const timeSinceStart = timeStamp - recStartTime;
           const nearestBeatIdx = Math.round(timeSinceStart / beatDurMs);
           const targetBeatTime = nearestBeatIdx * beatDurMs;
           const beatOffset = timeSinceStart - targetBeatTime;
@@ -1070,47 +1081,32 @@ const App = () => {
         }
 
         const timeSinceStart = perfTime - recStartTime;
-        let totalSubdivIdx = Math.round(timeSinceStart / subdivDurMs);
+        const nearestSubdivIdx = Math.round(timeSinceStart / subdivDurMs);
+        const naturalTargetTime = nearestSubdivIdx * subdivDurMs;
+        // Pure timing discrepancy relative to the true nearest grid slot:
+        const diffMs = timeSinceStart - naturalTargetTime;
 
-        // Anti-merging guard for sequential notes:
-        // When notes are played separately, prevent rounding collisions where two successive notes
-        // collapse into the same subdivision slot as an accidental chord.
+        // Slot assignment for score notation:
+        let totalSubdivIdx = Math.max(0, nearestSubdivIdx);
+
+        // If the exact same pitch was repeatedly struck in the same slot, advance by 1
+        // so multiple repeated strikes of the same key don't overwrite each other.
         const lastNote = lastNoteOnsetRef.current;
-        if (lastNote) {
-          const timeSinceCluster = perfTime - lastNote.perfTime;
-          const timeSinceLast = perfTime - lastNote.lastPerfTime;
-          // Simultaneous chord tolerance: notes struck within 40ms of previous and 65ms of cluster start
-          const isSimultaneousChord = timeSinceLast <= 40 && timeSinceCluster <= 65;
-
-          if (!isSimultaneousChord) {
-            // Notes were played separately: guarantee this note takes at least the next slot
-            if (totalSubdivIdx <= lastNote.totalSubdivIdx) {
-              totalSubdivIdx = lastNote.totalSubdivIdx + 1;
-            }
-            lastNoteOnsetRef.current = {
-              perfTime,
-              lastPerfTime: perfTime,
-              totalSubdivIdx
-            };
-          } else {
-            // Part of intentional simultaneous chord: group in the same slot
-            lastNote.lastPerfTime = perfTime;
-            totalSubdivIdx = lastNote.totalSubdivIdx;
-          }
-        } else {
-          lastNoteOnsetRef.current = {
-            perfTime,
-            lastPerfTime: perfTime,
-            totalSubdivIdx
-          };
+        if (lastNote && lastNote.midi === midi && totalSubdivIdx <= lastNote.totalSubdivIdx) {
+          totalSubdivIdx = lastNote.totalSubdivIdx + 1;
         }
+
+        lastNoteOnsetRef.current = {
+          midi,
+          perfTime,
+          totalSubdivIdx
+        };
 
         if (totalSubdivIdx >= 0) {
           const mIdx = Math.floor(totalSubdivIdx / measureSubdivisions);
           const inMeasureSubdiv = totalSubdivIdx % measureSubdivisions;
           const bIdx = Math.floor(inMeasureSubdiv / subdivsPerBeat);
           const sIdx = inMeasureSubdiv % subdivsPerBeat;
-          const diffMs = timeSinceStart - (totalSubdivIdx * subdivDurMs);
 
           if (mIdx < measuresRef.current) {
             activeNotes.current.set(midi, {
@@ -1165,7 +1161,6 @@ const App = () => {
 
   const tick = useCallback(() => {
     if (!audioCtx.current) return;
-    const outputLatencySec = (audioCtx.current.outputLatency || 0) + (audioCtx.current.baseLatency || 0);
 
     while (state.current.nextNoteTime < audioCtx.current.currentTime + 0.1) {
       // Check if we have finished all measures (measureCount starts at 0 for bar 1)
@@ -1194,7 +1189,7 @@ const App = () => {
       osc.start(time); 
       osc.stop(time + 0.08);
 
-      const delayMs = (time - audioCtx.current.currentTime + outputLatencySec) * 1000;
+      const delayMs = (time - audioCtx.current.currentTime) * 1000;
       const perfTime = performance.now() + delayMs;
       const thisBeatIdx = state.current.beatTimes.length;
       state.current.beatTimes.push({ audioTime: time, perfTime });
@@ -1240,13 +1235,14 @@ const App = () => {
     audioCtx.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     if (audioCtx.current.state === 'suspended') audioCtx.current.resume();
 
-    const outputLatencySec = (audioCtx.current.outputLatency || 0) + (audioCtx.current.baseLatency || 0);
     const startAudioTime = audioCtx.current.currentTime + 0.1;
-    const startPerfTime = performance.now() + (0.1 + outputLatencySec) * 1000;
-    const beatUnitFactor = 4 / timeSig.value;
-    const beatDurMs = (60.0 / tempo) * beatUnitFactor * 1000;
-    // Exactly timeSig.beats beats of intro count-in before the recording's first click
-    const estimatedRecStartTime = startPerfTime + (timeSig.beats * beatDurMs);
+    const startPerfTime = performance.now() + 100;
+    const currentTimeSig = timeSigRef.current;
+    const currentTempo = tempoRef.current;
+    const beatUnitFactor = 4 / currentTimeSig.value;
+    const beatDurMs = (60.0 / currentTempo) * beatUnitFactor * 1000;
+    // Exactly currentTimeSig.beats beats of intro count-in before the recording's first click
+    const estimatedRecStartTime = startPerfTime + (currentTimeSig.beats * beatDurMs);
 
     state.current = { 
       nextNoteTime: startAudioTime, 
@@ -1266,11 +1262,26 @@ const App = () => {
 
   const testLatency = () => {
     if (isPlaying) stop();
+
+    // Preserve existing meter and measures before temporarily forcing 4/4 and 4 bars
+    latencyPreTestConfig.current = {
+      timeSig: { ...timeSigRef.current },
+      measures: measuresRef.current
+    };
+
+    // Temporarily set meter to 4/4 and 4 bars for calibration duration (tempo remains unchanged)
+    const calibrationTimeSig = { beats: 4, value: 4 };
+    const calibrationMeasures = 4;
+    setTimeSig(calibrationTimeSig);
+    timeSigRef.current = calibrationTimeSig;
+    setMeasures(calibrationMeasures);
+    measuresRef.current = calibrationMeasures;
+
     latencyTestOffsets.current = [];
     isLatencyTesting.current = true;
     latencyMsRef.current = 0; 
     setLatencyMs(0); 
-    setDebugInfo(`[Calibration] Starting Latency Test at active tempo (${tempo} BPM)...\nPlease tap/play in sync with the metronome click for ${measures} ${measures === 1 ? 'bar' : 'bars'}.`);
+    setDebugInfo(`[Calibration] Starting Latency Test at active tempo (${tempoRef.current} BPM) with 4/4 meter (4 bars)...\nPlease tap/play in sync with the metronome click for 4 bars.`);
     
     // Defer start slightly to allow audio context and state to initialize
     setTimeout(() => onStart(), 100);
@@ -1469,7 +1480,7 @@ const App = () => {
               <button 
                 onClick={testLatency} 
                 className="px-3 h-7 bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-lg text-[9px] font-black text-slate-300 uppercase tracking-wider hover:bg-slate-700 hover:text-white transition-all whitespace-nowrap shadow-sm active:scale-95 cursor-pointer"
-                title={`Calibrate latency at current tempo (${tempo} BPM)`}
+                title={`Calibrate latency (runs a 4-bar 4/4 test at current ${tempo} BPM, then restores your previous meter and bars)`}
               >
                 Test Latency
               </button>
@@ -1477,27 +1488,27 @@ const App = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    const next = Math.max(-100, latencyMs - 5);
+                    const next = Math.max(-250, latencyMs - 5);
                     setLatencyMs(next);
                     latencyMsRef.current = next;
                   }}
                   className="w-4 h-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-white rounded text-[10px] font-black flex items-center justify-center border border-slate-700 cursor-pointer select-none"
-                  title="Nudge latency compensation -5ms"
+                  title="Nudge timing earlier (-5ms)"
                 >
                   -
                 </button>
-                <span className="text-[8px] font-mono text-slate-300 font-bold px-0.5 min-w-[38px] text-center">
+                <span className="text-[8px] font-mono text-slate-300 font-bold px-0.5 min-w-[38px] text-center" title="Timing calibration offset in ms">
                   {latencyMs === 0 ? '0ms' : `${latencyMs > 0 ? `+${latencyMs}` : latencyMs}ms`}
                 </span>
                 <button
                   type="button"
                   onClick={() => {
-                    const next = Math.min(300, latencyMs + 5);
+                    const next = Math.min(250, latencyMs + 5);
                     setLatencyMs(next);
                     latencyMsRef.current = next;
                   }}
                   className="w-4 h-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-white rounded text-[10px] font-black flex items-center justify-center border border-slate-700 cursor-pointer select-none"
-                  title="Nudge latency compensation +5ms"
+                  title="Nudge timing later (+5ms)"
                 >
                   +
                 </button>
@@ -1508,7 +1519,7 @@ const App = () => {
                       latencyMsRef.current = 0;
                     }} 
                     className="text-[7px] font-mono font-bold text-rose-400 hover:text-rose-300 underline cursor-pointer ml-0.5"
-                    title="Reset latency compensation to 0ms"
+                    title="Reset timing offset to 0ms"
                   >
                     reset
                   </button>
