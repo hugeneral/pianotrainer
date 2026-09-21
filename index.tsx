@@ -115,11 +115,19 @@ const getTimingLabel = (diffMs: number, toleranceMs: number = DEFAULT_PERFECT_WI
   return diffMs < 0 ? `${Math.abs(Math.round(diffMs))}ms EARLY` : `${Math.round(diffMs)}ms LATE`;
 };
 
-const useMidi = () => {
+const useMidi = (onMidiMessage?: (data: number[], timeStamp: number, source: 'midi' | 'keyboard') => void) => {
   const [isConnected, setIsConnected] = useState(false);
-  const [midiSignal, setMidiSignal] = useState<{data: number[], timeStamp: number, source: 'midi' | 'keyboard'} | null>(null);
   const [midiSupported, setMidiSupported] = useState(false);
   const [midiAccess, setMidiAccess] = useState<any>(null);
+
+  const onMidiMessageRef = useRef(onMidiMessage);
+  useEffect(() => {
+    onMidiMessageRef.current = onMidiMessage;
+  }, [onMidiMessage]);
+
+  const emit = useCallback((data: number[], timeStamp: number, source: 'midi' | 'keyboard') => {
+    onMidiMessageRef.current?.(data, timeStamp, source);
+  }, []);
 
   useEffect(() => {
     // Check for MIDI support safely
@@ -130,11 +138,7 @@ const useMidi = () => {
     const handleKey = (e: KeyboardEvent, isDown: boolean) => {
       const midi = KBD_MAP[e.key.toLowerCase()];
       if (midi) {
-        setMidiSignal({
-          data: [isDown ? 144 : 128, midi, isDown ? 100 : 0],
-          timeStamp: performance.now(),
-          source: 'keyboard'
-        });
+        emit([isDown ? 144 : 128, midi, isDown ? 100 : 0], performance.now(), 'keyboard');
       }
     };
 
@@ -147,9 +151,9 @@ const useMidi = () => {
       window.removeEventListener('keydown', downListener);
       window.removeEventListener('keyup', upListener);
     };
-  }, []);
+  }, [emit]);
 
-const connectMidi = useCallback(async () => {
+  const connectMidi = useCallback(async () => {
     if (!(navigator as any).requestMIDIAccess) {
       alert("MIDI API not found in this browser.");
       return;
@@ -165,7 +169,7 @@ const connectMidi = useCallback(async () => {
         const data = Array.from(msg.data) as number[];
         // Filter out MIDI Clock (248), Active Sensing (254), and other system messages (>= 240)
         if (data[0] >= 240) return;
-        setMidiSignal({ data, timeStamp: performance.now(), source: 'midi' });
+        emit(data, performance.now(), 'midi');
       };
 
       const updateInputs = () => {
@@ -191,9 +195,9 @@ const connectMidi = useCallback(async () => {
       console.error("MIDI Access Failed", e);
       alert("MIDI Connection failed. Please ensure 'SysEx' is enabled in your browser settings.");
     }
-  }, [setMidiSignal]);
+  }, [emit]);
 
-  return { isConnected, midiSignal, midiSupported, midiAccess, connectMidi };
+  return { isConnected, midiSupported, midiAccess, connectMidi };
 };
 
 interface RecordedNote {
@@ -287,8 +291,12 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, keySig
         // --- NOTE DETECTED ---
         const rawDur = Math.max(...startsAtSlot.map(n => n.durationSubdivs));
         
-        // We ensure we don't cross bar lines (remainingInMeasure)
-        const maxDur = Math.min(rawDur, remainingInMeasure); 
+        // Find next note start in the score to prevent skipping notes when notes overlap (legato)
+        const nextNote = sortedNotes.find(n => getNotePos(n) > currentSubdiv + 0.1);
+        const maxUntilNext = nextNote ? (getNotePos(nextNote) - currentSubdiv) : remainingInMeasure;
+
+        // We ensure we don't cross bar lines (remainingInMeasure) AND don't skip over the next note (maxUntilNext)
+        const maxDur = Math.max(1, Math.min(rawDur, remainingInMeasure, maxUntilNext)); 
 
         // Snap to largest standard duration
         let writeDur = 1;
@@ -301,21 +309,30 @@ const ScoreDisplay = ({ notes, timeSig, measures, isSessionActive, tempo, keySig
           }
         }
         
+        // Deduplicate notes at the same slot by MIDI number
+        const uniqueHitsByMidi = new Map<number, RecordedNote>();
+        for (const h of startsAtSlot) {
+          if (!uniqueHitsByMidi.has(h.midi)) {
+            uniqueHitsByMidi.set(h.midi, h);
+          }
+        }
+        const distinctHits = Array.from(uniqueHitsByMidi.values());
+
         // Render Note
-        if (startsAtSlot.length === 1) {
-          const noteName = noteMap[startsAtSlot[0].midi] || 'c3';
+        if (distinctHits.length === 1) {
+          const noteName = noteMap[distinctHits[0].midi] || 'c3';
           tex += `${noteName}.${rhythm} `;
         } else {
           tex += "(";
-          startsAtSlot.forEach((h, idx) => {
+          distinctHits.forEach((h, idx) => {
             const noteName = noteMap[h.midi] || 'c3';
-            tex += `${noteName}${idx === startsAtSlot.length - 1 ? '' : ' '}`;
+            tex += `${noteName}${idx === distinctHits.length - 1 ? '' : ' '}`;
           });
           tex += ").";
           tex += `${rhythm} `;
         }
         
-        texMetadata.push({ hits: startsAtSlot });
+        texMetadata.push({ hits: distinctHits });
         currentSubdiv += writeDur;
 
       } else {
@@ -828,21 +845,28 @@ const App = () => {
   const currentKeyDef = KEY_SIGNATURES.find(k => k.code === keySignature) || KEY_SIGNATURES[0];
   const accidentalMode = currentKeyDef.type === 'flats' ? 'flats' : 'sharps';
 
-  const { isConnected, midiSignal, midiSupported, midiAccess, connectMidi } = useMidi();
   const audioCtx = useRef<AudioContext | null>(null);
   const metTimer = useRef<any>(null);
   const activeNotes = useRef<Map<number, any>>(new Map());
+  const activeInputTimer = useRef<any>(null);
+  const lastNoteOnsetRef = useRef<{ perfTime: number; lastPerfTime: number; totalSubdivIdx: number } | null>(null);
 
   const tempoRef = useRef(tempo);
   const timeSigRef = useRef(timeSig);
   const measuresRef = useRef(measures);
   const minNoteRef = useRef(minNote);
   const quantizationRef = useRef(quantization);
+  const isPlayingRef = useRef(isPlaying);
+  const latencyMsRef = useRef(latencyMs);
+  const isConnectedRef = useRef(false);
+
   useEffect(() => { tempoRef.current = tempo; }, [tempo]);
   useEffect(() => { timeSigRef.current = timeSig; }, [timeSig]);
   useEffect(() => { measuresRef.current = measures; }, [measures]);
   useEffect(() => { minNoteRef.current = minNote; }, [minNote]);
   useEffect(() => { quantizationRef.current = quantization; }, [quantization]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { latencyMsRef.current = latencyMs; }, [latencyMs]);
 
   // Save config to localStorage whenever user changes settings
   useEffect(() => {
@@ -927,6 +951,7 @@ const App = () => {
     setIsIntro(false);
     state.current.isRecording = false;
     state.current.recordingStartPerfTime = 0;
+    lastNoteOnsetRef.current = null;
   }, [latencyMs]);
 
   const playSynth = useCallback((midi: number) => {
@@ -953,6 +978,167 @@ const App = () => {
     osc.start(now);
     osc.stop(now + 0.5);
   }, []);
+
+  const handleMidiMessage = useCallback((data: number[], timeStamp: number) => {
+    const [statusByte, rawMidi, vel] = data;
+    const midi = rawMidi;
+
+    // Filter out notes below minNote cutoff if valid (makes them completely transparent to the app)
+    const cutoffMidi = parseNoteNameToMidi(minNoteRef.current);
+    if (cutoffMidi !== null && midi < cutoffMidi) {
+      return;
+    }
+
+    // MASK the status byte to ignore channel information (0x90 vs 0x91 etc)
+    const command = statusByte & 0xF0; 
+    
+    const isNoteOn = (command === 0x90) && vel > 0;
+    const isNoteOff = (command === 0x80) || ((command === 0x90) && vel === 0);
+
+    // 1. Instant Feedback (Audio + Visual)
+    setActiveInput(true);
+    if (activeInputTimer.current) clearTimeout(activeInputTimer.current);
+    activeInputTimer.current = setTimeout(() => setActiveInput(false), 120);
+
+    // Only play synth sound if NO external MIDI device is connected
+    if (isNoteOn && !isConnectedRef.current) {
+      playSynth(midi);
+    }
+
+    // Latency compensation: Adjust input time by calibrated offset
+    const perfTime = timeStamp - latencyMsRef.current;
+
+    // 2. Recording Logic: Ensure notes start to be transcribed strictly at or after the first click of recording
+    if (isNoteOn) {
+      const recStartTime = state.current.recordingStartPerfTime;
+      const beatDurMs = (60.0 / tempoRef.current) * 1000;
+      const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
+      const subdivsPerBeat = subdivisionsPerWhole / timeSigRef.current.value;
+      const subdivDurMs = beatDurMs / subdivsPerBeat;
+      const measureSubdivisions = timeSigRef.current.beats * subdivsPerBeat;
+
+      // Notes must start being transcribed ONLY at or after the first click of recording!
+      // Allow up to half a subdivision early tolerance for human anticipation of the first downbeat
+      const isEligible = isPlayingRef.current && recStartTime > 0 && perfTime >= recStartTime - (subdivDurMs / 2);
+
+      if (isEligible) {
+        // Repeated-pitch guard:
+        // If this same pitch is already held in activeNotes, finalize and commit the previous note.
+        // This prevents rapid repeated strikes of the same key from overwriting each other.
+        if (activeNotes.current.has(midi)) {
+          const prev = activeNotes.current.get(midi)!;
+          const durMs = Math.max(10, perfTime - prev.startTime);
+          const durationSubdivs = Math.max(1, Math.round(durMs / subdivDurMs));
+          if (prev.mIdx >= 0 && prev.mIdx < measuresRef.current) {
+            const finishedNote: RecordedNote = {
+              id: Math.random().toString(36).substr(2, 9),
+              midi,
+              diffMs: prev.diffMs,
+              measure: prev.mIdx,
+              beatIndex: prev.bIdx,
+              subdivIndex: prev.sIdx,
+              durationSubdivs
+            };
+            if (!isLatencyTesting.current) {
+              setRecordedNotes(prevNotes => [...prevNotes, finishedNote]);
+            }
+            sessionNotesRef.current.push(finishedNote);
+          }
+          activeNotes.current.delete(midi);
+        }
+
+        const timeSinceStart = perfTime - recStartTime;
+        let totalSubdivIdx = Math.round(timeSinceStart / subdivDurMs);
+
+        // Anti-merging guard for sequential notes:
+        // When notes are played separately, prevent rounding collisions where two successive notes
+        // collapse into the same subdivision slot as an accidental chord.
+        const lastNote = lastNoteOnsetRef.current;
+        if (lastNote) {
+          const timeSinceCluster = perfTime - lastNote.perfTime;
+          const timeSinceLast = perfTime - lastNote.lastPerfTime;
+          // Simultaneous chord tolerance: notes struck within 40ms of previous and 65ms of cluster start
+          const isSimultaneousChord = timeSinceLast <= 40 && timeSinceCluster <= 65;
+
+          if (!isSimultaneousChord) {
+            // Notes were played separately: guarantee this note takes at least the next slot
+            if (totalSubdivIdx <= lastNote.totalSubdivIdx) {
+              totalSubdivIdx = lastNote.totalSubdivIdx + 1;
+            }
+            lastNoteOnsetRef.current = {
+              perfTime,
+              lastPerfTime: perfTime,
+              totalSubdivIdx
+            };
+          } else {
+            // Part of intentional simultaneous chord: group in the same slot
+            lastNote.lastPerfTime = perfTime;
+            totalSubdivIdx = lastNote.totalSubdivIdx;
+          }
+        } else {
+          lastNoteOnsetRef.current = {
+            perfTime,
+            lastPerfTime: perfTime,
+            totalSubdivIdx
+          };
+        }
+
+        if (totalSubdivIdx >= 0) {
+          const mIdx = Math.floor(totalSubdivIdx / measureSubdivisions);
+          const inMeasureSubdiv = totalSubdivIdx % measureSubdivisions;
+          const bIdx = Math.floor(inMeasureSubdiv / subdivsPerBeat);
+          const sIdx = inMeasureSubdiv % subdivsPerBeat;
+          const diffMs = timeSinceStart - (totalSubdivIdx * subdivDurMs);
+
+          if (mIdx < measuresRef.current) {
+            activeNotes.current.set(midi, {
+              startTime: perfTime,
+              mIdx,
+              bIdx,
+              sIdx,
+              diffMs
+            });
+          }
+        }
+      }
+    }
+
+    // Process Note OFF even if recording just stopped, to capture tail notes
+    if (isNoteOff) {
+      const startData = activeNotes.current.get(midi);
+      if (startData) {
+        const endTime = perfTime; 
+        const beatDurMs = (60.0 / tempoRef.current) * 1000;
+        const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
+        const subdivsPerBeat = subdivisionsPerWhole / timeSigRef.current.value;
+        const subdivDurMs = beatDurMs / subdivsPerBeat;
+        const durMs = endTime - startData.startTime;
+        
+        const durationSubdivs = Math.max(1, Math.round(durMs / subdivDurMs));
+        
+        if (startData.mIdx >= 0 && startData.mIdx < measuresRef.current) {
+          const newNote: RecordedNote = {
+            id: Math.random().toString(36).substr(2, 9),
+            midi,
+            diffMs: startData.diffMs,
+            measure: startData.mIdx,
+            beatIndex: startData.bIdx,
+            subdivIndex: startData.sIdx,
+            durationSubdivs
+          };
+          // Only add to visual staff if NOT testing latency
+          if (!isLatencyTesting.current) {
+            setRecordedNotes(prevNotes => [...prevNotes, newNote]);
+          }
+          sessionNotesRef.current.push(newNote);
+        }
+        activeNotes.current.delete(midi);
+      }
+    }
+  }, [playSynth]);
+
+  const { isConnected, midiSupported, midiAccess, connectMidi } = useMidi(handleMidiMessage);
+  useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
 
   const tick = useCallback(() => {
     if (!audioCtx.current) return;
@@ -1047,6 +1233,7 @@ const App = () => {
     };
     setRecordedNotes([]);
     sessionNotesRef.current = [];
+    lastNoteOnsetRef.current = null;
     setIsPlaying(true); 
     setIsIntro(true); 
     tick();
@@ -1070,109 +1257,6 @@ const App = () => {
     // Defer start slightly to allow state updates to settle if any refs depend on them immediately
     setTimeout(() => onStart(), 100);
   };
-
-  useEffect(() => {
-    if (midiSignal) {
-      const [statusByte, rawMidi, vel] = midiSignal.data;
-      
-      // Standard MIDI numbers: Middle C (C4) is 60.
-      const midi = rawMidi;
-
-      // Filter out notes below minNote cutoff if valid (makes them completely transparent to the app)
-      const cutoffMidi = parseNoteNameToMidi(minNoteRef.current);
-      if (cutoffMidi !== null && midi < cutoffMidi) {
-        return;
-      }
-
-      // MASK the status byte to ignore channel information (0x90 vs 0x91 etc)
-      const command = statusByte & 0xF0; 
-      
-      const isNoteOn = (command === 0x90) && vel > 0;
-      const isNoteOff = (command === 0x80) || ((command === 0x90) && vel === 0);
-
-      // 1. Instant Feedback (Audio + Visual)
-      setActiveInput(true);
-      
-      // Only play synth sound if NO external MIDI device is connected
-      // (User likely wants to hear the real instrument instead)
-      if (isNoteOn && !isConnected) {
-        playSynth(midi);
-      }
-      
-      const timer = setTimeout(() => setActiveInput(false), 150);
-
-      // Latency compensation: Adjust input time by fixed amount to correct for system delay
-      // Use state latencyMs
-      const perfTime = midiSignal.timeStamp - latencyMs;
-
-      // 2. Recording Logic: Ensure notes start to be transcribed strictly at or after the first click of recording
-      if (isNoteOn) {
-          const recStartTime = state.current.recordingStartPerfTime;
-          const beatDurMs = (60.0 / tempo) * 1000;
-          const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
-          const subdivsPerBeat = subdivisionsPerWhole / timeSig.value;
-          const subdivDurMs = beatDurMs / subdivsPerBeat;
-          const measureSubdivisions = timeSig.beats * subdivsPerBeat;
-
-          // Notes must start being transcribed ONLY at or after the first click of recording!
-          // Allow up to half a subdivision early tolerance for human anticipation of the first downbeat
-          const isEligible = isPlaying && recStartTime > 0 && perfTime >= recStartTime - (subdivDurMs / 2);
-
-          if (isEligible) {
-            const timeSinceStart = perfTime - recStartTime;
-            const totalSubdivIdx = Math.round(timeSinceStart / subdivDurMs);
-
-            if (totalSubdivIdx >= 0) {
-              const mIdx = Math.floor(totalSubdivIdx / measureSubdivisions);
-              const inMeasureSubdiv = totalSubdivIdx % measureSubdivisions;
-              const bIdx = Math.floor(inMeasureSubdiv / subdivsPerBeat);
-              const sIdx = inMeasureSubdiv % subdivsPerBeat;
-              const diffMs = timeSinceStart - (totalSubdivIdx * subdivDurMs);
-
-              if (mIdx < measures) {
-                activeNotes.current.set(midi, { 
-                  startTime: perfTime, 
-                  mIdx, 
-                  bIdx, 
-                  sIdx, 
-                  diffMs 
-                });
-              }
-            }
-          }
-      } 
-      
-      // Process Note OFF even if recording just stopped, to capture tail notes
-      if (isNoteOff) {
-          const startData = activeNotes.current.get(midi);
-          if (startData) {
-            const endTime = perfTime; 
-            const beatDurMs = (60.0 / tempo) * 1000;
-            const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
-            const subdivsPerBeat = subdivisionsPerWhole / timeSig.value;
-            const subdivDurMs = beatDurMs / subdivsPerBeat;
-            const durMs = endTime - startData.startTime;
-            
-            const durationSubdivs = Math.max(1, Math.round(durMs / subdivDurMs));
-            
-            if (startData.mIdx >= 0 && startData.mIdx < measures) {
-              const newNote: RecordedNote = {
-                id: Math.random().toString(36).substr(2, 9),
-                midi, diffMs: startData.diffMs, measure: startData.mIdx, beatIndex: startData.bIdx, subdivIndex: startData.sIdx, durationSubdivs
-              };
-              // Only add to visual staff if NOT testing latency
-              if (!isLatencyTesting.current) {
-                setRecordedNotes(prev => [...prev, newNote]);
-              }
-              sessionNotesRef.current.push(newNote);
-            }
-            activeNotes.current.delete(midi);
-          }
-      }
-
-      return () => clearTimeout(timer);
-    }
-  }, [midiSignal, timeSig.beats, timeSig.value, measures, tempo, playSynth, isConnected, latencyMs, minNote, quantization]);
 
   return (
     <div className="max-w-6xl mx-auto h-full p-6 flex flex-col gap-6 overflow-y-auto bg-black text-slate-100">
