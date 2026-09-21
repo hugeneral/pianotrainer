@@ -750,10 +750,11 @@ const InstructionsModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () =
             </p>
             <ol className="list-decimal list-inside text-slate-400 pl-4 space-y-1.5">
               <li>Click the <strong className="text-slate-200">"Test Latency"</strong> button on the control bar.</li>
-              <li>The tempo automatically locks to <strong className="text-slate-200">100 BPM</strong> with a 1-measure count-in.</li>
+              <li>The test runs directly at your <strong className="text-slate-200">current tempo</strong> with a 1-measure count-in.</li>
               <li>Tap any piano key in exact synchronization with the metronome clicks.</li>
-              <li>The calculation happens automatically after the set measures, saving your hardware delay offset (ms) and restoring your previous tempo, time meter, and measures.</li>
-              <li><strong className="text-slate-200">Accuracy Slider</strong>: Located directly under the Tempo control to adjust your difficulty threshold (default <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">±35ms</code>, or down to <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">±5ms</code> for strict precision).</li>
+              <li>The offset is calculated against the metronome beat clicks and applied as your latency compensation.</li>
+              <li>You can also fine-tune the latency offset manually using the <strong className="text-slate-200">+</strong> and <strong className="text-slate-200">-</strong> buttons under Test Latency.</li>
+              <li><strong className="text-slate-200">Accuracy Controls</strong>: Use the slider or the <strong className="text-slate-200">+</strong> and <strong className="text-slate-200">-</strong> buttons under Tempo to adjust your timing window (default <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">±35ms</code>, down to <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">±5ms</code> for strict precision).</li>
             </ol>
           </section>
 
@@ -833,13 +834,8 @@ const App = () => {
   const [activeInput, setActiveInput] = useState(false);
   const [debugInfo, setDebugInfo] = useState<string>('');
 
-  interface SavedLatencyConfig {
-    tempo: number;
-    timeSig: { beats: number; value: number };
-    measures: number;
-  }
   const isLatencyTesting = useRef(false);
-  const savedConfigForLatencyTest = useRef<SavedLatencyConfig | null>(null);
+  const latencyTestOffsets = useRef<number[]>([]);
   const sessionNotesRef = useRef<RecordedNote[]>([]); // Track all notes for calculation
 
   const currentKeyDef = KEY_SIGNATURES.find(k => k.code === keySignature) || KEY_SIGNATURES[0];
@@ -927,24 +923,25 @@ const App = () => {
     activeNotes.current.clear();
 
     if (isLatencyTesting.current) {
-       const saved = savedConfigForLatencyTest.current;
-       if (sessionNotesRef.current.length > 0) {
-           const sum = sessionNotesRef.current.reduce((acc, n) => acc + n.diffMs, 0);
-           const avg = sum / sessionNotesRef.current.length;
+       const offsets = latencyTestOffsets.current;
+       if (offsets.length > 0) {
+           // If we have at least 4 taps, discard the min and max extremes for a cleaner trimmed average
+           let validOffsets = [...offsets];
+           if (validOffsets.length >= 4) {
+             validOffsets.sort((a, b) => a - b);
+             validOffsets = validOffsets.slice(1, -1);
+           }
+           const sum = validOffsets.reduce((acc, o) => acc + o, 0);
+           const avg = sum / validOffsets.length;
            const newLatency = Math.round(avg);
            setLatencyMs(newLatency);
-           setDebugInfo(`[Calibration] Latency Test Complete.\nDetected Avg Offset: ${avg.toFixed(2)}ms\nNew Latency Compensation: ${newLatency}ms\nRestored previous settings: ${saved ? `${saved.tempo} BPM, ${saved.timeSig.beats}/${saved.timeSig.value}, ${saved.measures} bars` : ''}\n`);
+           latencyMsRef.current = newLatency;
+           setDebugInfo(`[Calibration] Latency Test Complete at ${tempoRef.current} BPM.\nCollected ${offsets.length} taps (Avg offset: ${avg >= 0 ? `+${avg.toFixed(1)}` : avg.toFixed(1)}ms).\nSet Latency Compensation to: ${newLatency >= 0 ? `+${newLatency}` : newLatency}ms.`);
        } else {
-           setDebugInfo(`[Calibration] Failed: No notes detected.\nRestored previous settings: ${saved ? `${saved.tempo} BPM, ${saved.timeSig.beats}/${saved.timeSig.value}, ${saved.measures} bars` : ''}\n`);
+           setDebugInfo(`[Calibration] No taps detected during latency test at ${tempoRef.current} BPM.\nLatency remains: ${latencyMsRef.current}ms.`);
        }
        isLatencyTesting.current = false;
-       // Restore saved tempo, time meter, and measures from before latency test
-       if (saved) {
-         setTempo(saved.tempo);
-         setTimeSig(saved.timeSig);
-         setMeasures(saved.measures);
-         savedConfigForLatencyTest.current = null;
-       }
+       latencyTestOffsets.current = [];
     }
 
     setIsPlaying(false);
@@ -1007,6 +1004,28 @@ const App = () => {
 
     // Latency compensation: Adjust input time by calibrated offset
     const perfTime = timeStamp - latencyMsRef.current;
+
+    // Latency test mode: measure user taps directly against the nearest metronome beat click
+    if (isLatencyTesting.current) {
+      if (isNoteOn) {
+        const recStartTime = state.current.recordingStartPerfTime;
+        const beatDurMs = (60.0 / tempoRef.current) * 1000;
+        if (recStartTime > 0 && perfTime >= recStartTime - (beatDurMs / 2)) {
+          const timeSinceStart = perfTime - recStartTime;
+          const nearestBeatIdx = Math.round(timeSinceStart / beatDurMs);
+          const targetBeatTime = nearestBeatIdx * beatDurMs;
+          const beatOffset = timeSinceStart - targetBeatTime;
+          // Accept taps within reasonable vicinity of a beat (45% of beat length)
+          if (Math.abs(beatOffset) <= beatDurMs * 0.45) {
+            latencyTestOffsets.current.push(beatOffset);
+          }
+        }
+      }
+      if (isNoteOff) {
+        activeNotes.current.delete(midi);
+      }
+      return;
+    }
 
     // 2. Recording Logic: Ensure notes start to be transcribed strictly at or after the first click of recording
     if (isNoteOn) {
@@ -1241,20 +1260,13 @@ const App = () => {
 
   const testLatency = () => {
     if (isPlaying) stop();
-    // Save current tempo, time meter, and measures before starting test at standard 100 BPM
-    savedConfigForLatencyTest.current = {
-      tempo,
-      timeSig: { ...timeSig },
-      measures
-    };
-    setTempo(100);
-    setMeasures(4);
-    setTimeSig({ beats: 4, value: 4 });
-    setLatencyMs(0); 
+    latencyTestOffsets.current = [];
     isLatencyTesting.current = true;
-    setDebugInfo(`[Calibration] Starting Latency Test at 100 BPM (4/4, 4 bars)...\n(Original settings saved: ${tempo} BPM, ${timeSig.beats}/${timeSig.value}, ${measures} bars; will restore after test)\nPlease tap/play exactly on the metronome click for 4 bars.`);
+    latencyMsRef.current = 0; 
+    setLatencyMs(0); 
+    setDebugInfo(`[Calibration] Starting Latency Test at active tempo (${tempo} BPM)...\nPlease tap/play in sync with the metronome click for ${measures} ${measures === 1 ? 'bar' : 'bars'}.`);
     
-    // Defer start slightly to allow state updates to settle if any refs depend on them immediately
+    // Defer start slightly to allow audio context and state to initialize
     setTimeout(() => onStart(), 100);
   };
 
@@ -1322,14 +1334,21 @@ const App = () => {
               <button onClick={()=>setTempo(t=>Math.min(240,t+5))} className="w-8 h-8 bg-slate-800 rounded-lg text-base font-black hover:bg-slate-700 active:scale-95 transition-all text-slate-200">+</button>
             </div>
             
-            {/* Accuracy slider placed directly under tempo */}
+            {/* Accuracy control placed directly under tempo with - and + buttons */}
             <div className="mt-3 flex flex-col items-center w-full">
               <div className="flex justify-between items-center w-full px-0.5 mb-1">
-                <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Accuracy</label>
+                <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest" title="Timing window for Perfect rating">Accuracy</label>
                 <span className="text-[9px] font-mono font-bold text-slate-300">±{toleranceMs}ms</span>
               </div>
               <div className="flex items-center gap-1.5 w-full justify-center">
-                <span className="text-[7px] font-bold text-slate-500 uppercase">±5ms</span>
+                <button
+                  type="button"
+                  onClick={() => setToleranceMs(t => Math.max(5, t - 2))}
+                  className="w-5 h-5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 rounded text-xs font-black flex items-center justify-center border border-slate-700 transition-all cursor-pointer select-none"
+                  title="Tighter accuracy (-2ms)"
+                >
+                  -
+                </button>
                 <input 
                   type="range" 
                   min="5" 
@@ -1337,10 +1356,17 @@ const App = () => {
                   step="1"
                   value={toleranceMs}
                   onChange={(e) => setToleranceMs(parseInt(e.target.value))}
-                  className="w-16 sm:w-20 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-slate-400 focus:outline-none"
-                  title={`Timing accuracy threshold: ±${toleranceMs}ms (Middle: 35ms)`}
+                  className="w-14 sm:w-16 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-slate-400 focus:outline-none"
+                  title={`Timing accuracy threshold: ±${toleranceMs}ms`}
                 />
-                <span className="text-[7px] font-bold text-slate-500 uppercase">±65ms</span>
+                <button
+                  type="button"
+                  onClick={() => setToleranceMs(t => Math.min(65, t + 2))}
+                  className="w-5 h-5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 rounded text-xs font-black flex items-center justify-center border border-slate-700 transition-all cursor-pointer select-none"
+                  title="Looser accuracy (+2ms)"
+                >
+                  +
+                </button>
               </div>
             </div>
           </div>
@@ -1437,17 +1463,45 @@ const App = () => {
               <button 
                 onClick={testLatency} 
                 className="px-3 h-7 bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-lg text-[9px] font-black text-slate-300 uppercase tracking-wider hover:bg-slate-700 hover:text-white transition-all whitespace-nowrap shadow-sm active:scale-95 cursor-pointer"
+                title={`Calibrate latency at current tempo (${tempo} BPM)`}
               >
                 Test Latency
               </button>
-              <div className="flex items-center gap-1.5 mt-1">
-                <span className="text-[8px] font-mono text-slate-400 font-bold">
-                  {latencyMs === 0 ? '0ms offset' : `${latencyMs > 0 ? `+${latencyMs}` : latencyMs}ms`}
+              <div className="flex items-center gap-1 mt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = Math.max(-100, latencyMs - 5);
+                    setLatencyMs(next);
+                    latencyMsRef.current = next;
+                  }}
+                  className="w-4 h-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-white rounded text-[10px] font-black flex items-center justify-center border border-slate-700 cursor-pointer select-none"
+                  title="Nudge latency compensation -5ms"
+                >
+                  -
+                </button>
+                <span className="text-[8px] font-mono text-slate-300 font-bold px-0.5 min-w-[38px] text-center">
+                  {latencyMs === 0 ? '0ms' : `${latencyMs > 0 ? `+${latencyMs}` : latencyMs}ms`}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = Math.min(300, latencyMs + 5);
+                    setLatencyMs(next);
+                    latencyMsRef.current = next;
+                  }}
+                  className="w-4 h-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-white rounded text-[10px] font-black flex items-center justify-center border border-slate-700 cursor-pointer select-none"
+                  title="Nudge latency compensation +5ms"
+                >
+                  +
+                </button>
                 {latencyMs !== 0 && (
                   <button 
-                    onClick={() => setLatencyMs(0)} 
-                    className="text-[7px] font-mono font-bold text-rose-400 hover:text-rose-300 underline cursor-pointer"
+                    onClick={() => {
+                      setLatencyMs(0);
+                      latencyMsRef.current = 0;
+                    }} 
+                    className="text-[7px] font-mono font-bold text-rose-400 hover:text-rose-300 underline cursor-pointer ml-0.5"
                     title="Reset latency compensation to 0ms"
                   >
                     reset

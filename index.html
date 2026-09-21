@@ -3,12 +3,15 @@
   <head>
     <script>
       window.onerror = function(msg, url, line) {
-        alert("CRASH DETECTED:\n" + msg + "\nLine: " + line);
+        console.error("Runtime error:", msg, "at line:", line, "url:", url);
       };
     </script>
 
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="description" content="Professional-grade piano practice assistant with real-time MIDI notation and timing analytics." />
+    <meta property="og:title" content="Piano Trainer Pro" />
+    <meta property="og:description" content="Professional-grade piano practice assistant with real-time MIDI notation and timing analytics." />
     
     <!-- PWA / iOS Configuration -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -59,17 +62,6 @@
       ::-webkit-scrollbar-thumb { background: #475569; border-radius: 10px; }
       ::-webkit-scrollbar-thumb:hover { background: #64748b; }
     </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react/": "https://esm.sh/react@^19.2.4/",
-    "react": "https://esm.sh/react@^19.2.4",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "vite": "https://esm.sh/vite@^7.3.1",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2"
-  }
-}
-</script>
 </head>
   <body class="text-slate-100 font-sans no-select">
     <div id="root" style="height: 100%; overflow: hidden;"></div>
