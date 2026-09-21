@@ -890,7 +890,8 @@ const App = () => {
     // Flush any active notes that are still held down
     const now = performance.now();
     const flushedNotes: RecordedNote[] = [];
-    const beatDurMs = (60.0 / tempoRef.current) * 1000;
+    const beatUnitFactor = 4 / timeSigRef.current.value;
+    const beatDurMs = (60.0 / tempoRef.current) * beatUnitFactor * 1000;
     const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
     const subdivsPerBeat = subdivisionsPerWhole / timeSigRef.current.value;
     const subdivDurMs = beatDurMs / subdivsPerBeat;
@@ -1009,7 +1010,8 @@ const App = () => {
     if (isLatencyTesting.current) {
       if (isNoteOn) {
         const recStartTime = state.current.recordingStartPerfTime;
-        const beatDurMs = (60.0 / tempoRef.current) * 1000;
+        const beatUnitFactor = 4 / timeSigRef.current.value;
+        const beatDurMs = (60.0 / tempoRef.current) * beatUnitFactor * 1000;
         if (recStartTime > 0 && perfTime >= recStartTime - (beatDurMs / 2)) {
           const timeSinceStart = perfTime - recStartTime;
           const nearestBeatIdx = Math.round(timeSinceStart / beatDurMs);
@@ -1030,7 +1032,8 @@ const App = () => {
     // 2. Recording Logic: Ensure notes start to be transcribed strictly at or after the first click of recording
     if (isNoteOn) {
       const recStartTime = state.current.recordingStartPerfTime;
-      const beatDurMs = (60.0 / tempoRef.current) * 1000;
+      const beatUnitFactor = 4 / timeSigRef.current.value;
+      const beatDurMs = (60.0 / tempoRef.current) * beatUnitFactor * 1000;
       const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
       const subdivsPerBeat = subdivisionsPerWhole / timeSigRef.current.value;
       const subdivDurMs = beatDurMs / subdivsPerBeat;
@@ -1127,7 +1130,8 @@ const App = () => {
       const startData = activeNotes.current.get(midi);
       if (startData) {
         const endTime = perfTime; 
-        const beatDurMs = (60.0 / tempoRef.current) * 1000;
+        const beatUnitFactor = 4 / timeSigRef.current.value;
+        const beatDurMs = (60.0 / tempoRef.current) * beatUnitFactor * 1000;
         const subdivisionsPerWhole = QUANTIZATION_DIVISIONS[quantizationRef.current] || 16;
         const subdivsPerBeat = subdivisionsPerWhole / timeSigRef.current.value;
         const subdivDurMs = beatDurMs / subdivsPerBeat;
@@ -1211,7 +1215,8 @@ const App = () => {
         }
       }, Math.max(0, delayMs));
 
-      state.current.nextNoteTime += 60.0 / tempoRef.current;
+      const beatUnitFactor = 4 / timeSigRef.current.value;
+      state.current.nextNoteTime += (60.0 / tempoRef.current) * beatUnitFactor;
       state.current.currentBeat++;
       if (state.current.currentBeat >= timeSigRef.current.beats) {
         state.current.currentBeat = 0; 
@@ -1238,7 +1243,8 @@ const App = () => {
     const outputLatencySec = (audioCtx.current.outputLatency || 0) + (audioCtx.current.baseLatency || 0);
     const startAudioTime = audioCtx.current.currentTime + 0.1;
     const startPerfTime = performance.now() + (0.1 + outputLatencySec) * 1000;
-    const beatDurMs = (60.0 / tempo) * 1000;
+    const beatUnitFactor = 4 / timeSig.value;
+    const beatDurMs = (60.0 / tempo) * beatUnitFactor * 1000;
     // Exactly timeSig.beats beats of intro count-in before the recording's first click
     const estimatedRecStartTime = startPerfTime + (timeSig.beats * beatDurMs);
 
